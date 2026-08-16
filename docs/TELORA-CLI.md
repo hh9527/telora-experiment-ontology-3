@@ -15,6 +15,8 @@ Telora 从当前目录向上查找最近的 `telora-deps.json`，因此命令可
 ./bin/telora show @src/ontology.telora -C ontology -k type,let,def,import
 ./bin/telora show @src/ontology.telora -C ontology --exports
 ./bin/telora show @src/ontology.telora -C ontology --at 12:4
+./bin/telora show std/string -C ontology --exports
+./bin/telora show std/array -C ontology -p flat_map
 ./bin/telora run -S path/to/file.telora
 ./bin/telora run main -C ontology --entry path/to/entry.telora
 ./bin/telora run invalid -C ontology --best-effort
@@ -52,6 +54,8 @@ Telora 从当前目录向上查找最近的 `telora-deps.json`，因此命令可
 - `show` 输出 `telora.show/v1` JSONL 语义记录；默认列出选中模块的顶层 local
   definitions。它查询 recoverable CST 和部分语义/求值证据图，因此在模块损坏时仍可
   返回不受影响的事实；命令成功只表示查询完成，不表示模块能够通过 `check` 或 `run`。
+- `show std/...` 直接查询 Host 注册的公开标准库逻辑模块，与源码 `import "std/..."`
+  使用同一模块身份；不需要也不能把 `std` 声明成 workspace dependency。
 - `-p` 按名称的大小写敏感字面子串过滤，不是 glob 或正则。
 - `-k` 接受逗号分隔的 `type,let,def,import`；`--exports` 改查公共接口并与 `-k`
   互斥。
