@@ -33,6 +33,63 @@
       "./bin/telora show @bin/main.telora -C ent-1"
     ]
   },
+  "metrics": {
+    "roles": {
+      "a1": {
+        "learning_phases": ["language_learning"],
+        "work_phase": "implementation",
+        "work_files": ["query-builder/src/query_builder.telora"],
+        "artifacts": {
+          "code": {
+            "core": ["query-builder/src/query_builder.telora"],
+            "entries": ["query-builder/src/bin/*.telora"],
+            "tests": ["query-builder/tests/query-builder.telora"]
+          },
+          "documents": {
+            "docs": [
+              "query-builder/QUERY-BUILDER-TUTORIAL.md",
+              "query-builder/PUBLIC-CONTRACT.md",
+              "query-builder/NOTES.md"
+            ]
+          }
+        }
+      },
+      "a2": {
+        "learning_phases": ["language_learning", "query_builder_learning"],
+        "work_phase": "implementation",
+        "work_files": ["ontology/src/graph.telora"],
+        "artifacts": {
+          "code": {
+            "core": ["ontology/src/graph.telora", "ontology/src/ontology.telora"],
+            "entries": ["ontology/src/bin/*.telora"],
+            "tests": ["ontology/tests/ontology.telora"]
+          },
+          "documents": {
+            "docs": [
+              "ontology/DSL-TUTORIAL.md",
+              "ontology/PUBLIC-CONTRACT.md",
+              "ontology/NOTES.md"
+            ]
+          }
+        }
+      },
+      "a3": {
+        "learning_phases": ["language_learning", "query_builder_learning", "edsl_learning"],
+        "work_phase": "modeling",
+        "work_files": ["ent-1/src/logistics.telora"],
+        "artifacts": {
+          "code": {
+            "core": ["ent-1/src/logistics.telora"],
+            "entries": ["ent-1/src/bin/*.telora"],
+            "tests": ["ent-1/tests/logistics.telora"]
+          },
+          "documents": {
+            "docs": ["ent-1/FEEDBACK.md", "ent-1/NOTES.md"]
+          }
+        }
+      }
+    }
+  },
   "artifacts": [
     {
       "name": "telora",

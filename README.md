@@ -59,7 +59,22 @@ binary、语言/CLI 教程，或同时完成二者，再沿相同依赖链重验
 ./oc-ctl start t001
 ```
 
-观察使用 `oc-ctl status/recent/children/child-recent/files`。一代完成后，如 Host
+观察使用 `oc-ctl status/recent/children/child-recent/files`。成本与产出统计使用：
+
+```bash
+./oc-ctl stats t001
+```
+
+该命令从 child session 的逐消息元数据统计各角色和学习/工作阶段的 active、elapsed、
+waiting 时间以及 input/output/reasoning/cache token；从最终工作区统计各角色保留的
+Telora 代码和文档文件数、物理行数与 bytes。阶段名称、首次正式工作文件和产出归属由
+`experiment.json.metrics` 固定，因此不依赖解析 Agent 的自然语言总结；临时 probe 只有
+在 metrics artifact patterns 中显式列出时才计入产出。运行中、idle、finished、retired
+execution 使用同一个 `telora.opencode-stats/v1` JSON schema，准备实验时 metrics 配置
+会冻结到 execution state。未配置角色仍会统计时间、token 与模型，但阶段明确标记为
+`unclassified`，不推测学习/工作边界。
+
+一代完成后，如 Host
 已经整理批准反馈，或者实验基础设施已经原子发布新的 binary 与教程，可启动下一代：
 
 ```bash
