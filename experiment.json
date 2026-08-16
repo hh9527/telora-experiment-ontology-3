@@ -1,0 +1,49 @@
+{
+  "schema": "telora.opencode-cloned-plan/v1",
+  "prompts": {
+    "start": "请开始实验。",
+    "continue": "恢复执行。"
+  },
+  "environment": {
+    "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "128000"
+  },
+  "permission_preflight": {
+    "a1": [
+      "./bin/telora run main -C query-builder",
+      "./bin/telora run invalid -C query-builder --best-effort",
+      "./bin/telora check @test/query-builder.telora -C query-builder",
+      "./bin/telora show @bin/main.telora -C query-builder"
+    ],
+    "a2": [
+      "./bin/telora run main -C ontology",
+      "./bin/telora run invalid -C ontology --best-effort",
+      "./bin/telora check @test/ontology.telora -C ontology",
+      "./bin/telora show @bin/main.telora -C ontology"
+    ],
+    "a3": [
+      "./bin/telora run main -C ent-1",
+      "./bin/telora run invalid -C ent-1 --best-effort",
+      "./bin/telora check @test/logistics.telora -C ent-1",
+      "./bin/telora show @bin/main.telora -C ent-1"
+    ]
+  },
+  "artifacts": [
+    {
+      "name": "telora",
+      "source": "target/debug/telora",
+      "to": "bin/telora",
+      "build": ["cargo", "build", "-p", "telora"],
+      "mode": "0555"
+    }
+  ],
+  "validation": [
+    {"name": "query-builder", "cwd": "query-builder", "command": ["../bin/telora", "run", "main"], "required": true},
+    {"name": "query-builder-verify", "cwd": "query-builder", "command": ["../bin/telora", "run", "verify"], "required": true},
+    {"name": "ontology", "cwd": "ontology", "command": ["../bin/telora", "run", "main"], "required": true},
+    {"name": "ontology-verify", "cwd": "ontology", "command": ["../bin/telora", "run", "verify"], "required": true},
+    {"name": "enterprise", "cwd": "ent-1", "command": ["../bin/telora", "run", "main"], "required": true},
+    {"name": "enterprise-verify", "cwd": "ent-1", "command": ["../bin/telora", "run", "verify"], "required": true}
+  ],
+  "observe": ["query-builder", "ontology", "ent-1"],
+  "archive": ["docs", "query-builder", "ontology", "ent-1", ".opencode", "opencode.json", "experiment.json"]
+}

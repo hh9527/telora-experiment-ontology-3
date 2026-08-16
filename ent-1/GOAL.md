@@ -1,0 +1,62 @@
+# A3 目标：建立物流 EnterpriseKnowledge
+
+作为企业知识作者，使用 ontology eDSL 表达 `ent-1/DOMAIN.md`，得到具体的
+EnterpriseKnowledge。用合法和非法 Request 验证完整链路：
+
+```text
+EnterpriseKnowledge + Request -> Plan -> Query
+```
+
+不得查看上游私有实现，不得在企业 package 中重写 eDSL、Plan 或 QueryBuilder。
+
+## 稳定输入
+
+- `docs/LANG-TUTORIAL.md`
+- `docs/TELORA-CLI.md`
+- `query-builder/QUERY-BUILDER-TUTORIAL.md`
+- `query-builder/PUBLIC-CONTRACT.md`
+- `ontology/DSL-TUTORIAL.md`
+- `ontology/PUBLIC-CONTRACT.md`
+- `ent-1/GOAL.md`
+- `ent-1/DOMAIN.md`
+
+不得读取 `query-builder/{GOAL,DESIGN,NOTES,src,tests}` 或
+`ontology/{GOAL,DESIGN,NOTES,src,tests}`。
+
+## 交付物
+
+- `ent-1/src/`：封闭 vocabulary、领域事实、能力、表达式、关系 mapping、
+  PlanProfile，以及实例化的 EnterpriseKnowledge；
+- `ent-1/src/bin/main.telora`：合法 Request 得到完整 Plan 和 Query；
+- `ent-1/src/bin/verify.telora`：验证 Plan 覆盖、profile 约束和 Query 确定性；
+- `ent-1/src/bin/invalid.telora`：非法场景产生 Host 诊断且无 Plan/Query；
+- `ent-1/tests/logistics.telora`：公共契约检查；
+- `ent-1/FEEDBACK.md`：按 QueryBuilder/eDSL 分区记录具体使用摩擦；
+- `ent-1/NOTES.md`：模型选择、验证结果和风险。
+
+不得修改 `ent-1/telora-deps.json`。不得复制共享算法、定义替代 Plan、用任意 builder
+手工组装 Plan、使用预渲染 SQL、`Any`、`Dyn` 或 String 语义身份。
+
+合法入口必须分别保留并验证 Plan 与 Query：
+
+```text
+plan  = make_query_creator(knowledge)(request)
+query = query_builder.transform(plan)
+```
+
+## 验证
+
+```text
+./bin/telora run main -C ent-1
+./bin/telora run verify -C ent-1
+./bin/telora run invalid -C ent-1 --best-effort
+./bin/telora check @test/logistics.telora -C ent-1
+./bin/telora show @bin/main.telora -C ent-1
+```
+
+完成时报告真实结果与具体反馈，不要求 Git commit。
+
+## 上游更新复验
+
+收到复验指令时，重新读取两层公共交付，保持同一题面和验收场景，适配批准的 API
+更新并重新验证；更新 feedback 与 notes，不推测上游私有实现。
