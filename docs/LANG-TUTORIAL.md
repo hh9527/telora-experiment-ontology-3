@@ -591,6 +591,12 @@ best-effort 求值在复合值内部也按数据依赖推进。`array.map` 会�
 继续后续逐项变换，并按索引顺序处理健康槽位；`array.length` 只依赖已知形状；选择
 失败槽位会传播原诊断。`filter` 可以继续检查其他独立 predicate，但任一 predicate
 失败都会令最终成员关系不可发布；`fold` 的 accumulator 失败后不再调用后续 reducer。
+`flat_map`、`concat` 和 spread 的输出形状依赖失败成员，因此最终传播原 Fail，但不会
+再产生“expected Array/Func”一类级联类型错误。普通函数的 callee 或直接实参为 Fail
+时不执行函数体；结构相等、codec 和 JSON 读取完整数据图，遇到可达 Fail 也传播原根因。
+Array/Tuple/Dict/tagged 构造、`map`、`enumerate`、`push` 和 `zip` 等保形操作可以保留
+失败子节点，以便继续健康成员。`any` 的健康 True 和 `all` 的健康 False 可以确定性短路；
+`find` 若在候选成员之前已有失败 predicate，则成员身份不确定并传播 Fail。
 这些失败槽位不是语言值或额外 variant，源码不能匹配或恢复。可达性只决定还可继续
 哪些诊断计算；只要出现任何 error，本轮 World 导出就整体失去意义，即使干净的最终根
 仍可算出，普通 module/codec/Host 边界也不会发布它。需要业务恢复时仍显式使用
