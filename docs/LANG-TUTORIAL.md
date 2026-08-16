@@ -514,10 +514,17 @@ def collect: for(N) Fn(Array(Item(N))) -> Array(Item(N)) = fn(items) {
 
 ## String 与诊断
 
-`std/string.chars: Fn(String) -> Array(String)` 按 Unicode scalar value 遍历
-String。每项是恰好包含一个 scalar 的 String；空串得到 `[]`，不产生首尾空串。
-它不按 grapheme cluster 或终端显示宽度切分，也不进行 Unicode normalization。
-需要逐字符检查时使用 `chars`，不要用 `string.split(text, "")` 模拟。
+只需要判断整个 String 是否满足词法规则时，使用 `std/regex` 做整串匹配，不要先把
+String 拆成字符数组。应在模块级编译一次规则并复用，例如 SQL identifier：
+
+```telora
+import "std/regex" as regex;
+
+let sql_identifier = regex.compile(r"^[A-Za-z_][A-Za-z0-9_]*$");
+let valid = regex.is_match(sql_identifier, text);
+```
+
+不要用 `string.split(text, "")` 模拟字符遍历；它会物化中间数组，并包含首尾空串。
 
 普通字符串不进行插值。插值使用反引号：
 
