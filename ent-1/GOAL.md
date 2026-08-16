@@ -26,6 +26,9 @@ EnterpriseKnowledge + Request -> Plan -> Query
 generation marker：
 
 - `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布当前 generation 输入已发布；
+- `control/GNNN-QUERY-BUILDER-DRAFT-READY`：同 generation 的该 marker 出现后读取
+  QueryBuilder 公共草案，依据 DOMAIN 完成能力审查并写入
+  `ent-1/QUERY-BUILDER-FEEDBACK.md`，但不开始最终建模；
 - `control/GNNN-QUERY-BUILDER-READY`：同 generation 的该 marker 出现后才能读取
   `query-builder/QUERY-BUILDER-TUTORIAL.md` 与 `query-builder/PUBLIC-CONTRACT.md`，
   学习 Plan、PlanProfile 和 SQLite Query；
@@ -47,6 +50,7 @@ A3 不得创建或修改任何 control marker。
 - `ent-1/src/bin/invalid.telora`：非法场景产生 Host 诊断且无 Plan/Query；
 - `ent-1/tests/logistics.telora`：公共契约检查；
 - `ent-1/FEEDBACK.md`：按 QueryBuilder/eDSL 分区记录具体使用摩擦；
+- `ent-1/QUERY-BUILDER-FEEDBACK.md`：最终建模前对 QueryBuilder 草案的能力审查；
 - `ent-1/NOTES.md`：模型选择、验证结果和风险。
 
 不得修改 `ent-1/telora-deps.json`。不得复制共享算法、定义替代 Plan、用任意 builder

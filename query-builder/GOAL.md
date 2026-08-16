@@ -21,6 +21,9 @@ ontology 概念或企业领域事实。本轮只实现 SQLite，不扩展其他 
 - `ent-1/FEEDBACK.md`：G001 时是空文件，后续 generation 可以包含 Host 批准反馈；
 - `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布该 generation 的 binary、教程、
   设计和 feedback 已经原子发布，可以开始学习、实现或修订。
+- `ontology/QUERY-BUILDER-FEEDBACK.md` 与 `ent-1/QUERY-BUILDER-FEEDBACK.md`：消费者
+  审查结果，只有同 generation 的 query-builder-review-ready 出现后才能读取；
+- `control/GNNN-QUERY-BUILDER-REVIEW-READY`：两份消费者审查均已完成。
 
 不在清单中的文件不是 A1 输入。A1 不得创建或修改任何 control marker。
 
@@ -52,6 +55,7 @@ ontology 概念或企业领域事实。本轮只实现 SQLite，不扩展其他 
 
 ## 反馈修订
 
-G001 实现完整 QueryBuilder。后续 generation 重新阅读语言教程并使用新 binary，只
-处理 `ent-1/FEEDBACK.md` 中明确归属于 QueryBuilder 的批准项，同时重新验证既有
-交付；即使 feedback 为空，也要验证 runtime revision 是否影响实现。不得读取企业源码。
+G001 先发布并验证可执行的 QueryBuilder 草案。query-builder-review-ready 出现后，
+读取两份消费者审查，修订实现、教程和契约，再重跑全部验证后定稿。后续 generation
+还只处理 `ent-1/FEEDBACK.md` 中明确归属于 QueryBuilder 的批准项。不得读取企业或
+ontology 的私有输入与源码。

@@ -30,18 +30,22 @@ EnterpriseKnowledge + Request -> Plan -> Query
 
 ```text
 G001-INPUTS-READY
+  -> G001-QUERY-BUILDER-DRAFT-READY
+  -> G001-QUERY-BUILDER-REVIEW-READY
   -> G001-QUERY-BUILDER-READY
   -> G001-EDSL-READY
   -> G001-ENTERPRISE-READY
 ```
 
-inputs-ready 后 A1/A2/A3 并行学习本代 Telora；A1 完成后，A2 与 A3 并行学习
-QueryBuilder，同时 A2 开始实现 eDSL；A2 完成后 A3 才读取 eDSL 并建模。较新的
+inputs-ready 后 A1/A2/A3 并行学习本代 Telora；A1 发布可执行 QueryBuilder 草案后，
+A2 依据 DESIGN、A3 依据 DOMAIN 并行审查公共能力，A1 处理两份反馈并定稿。之后
+A2 开始实现 eDSL，A3 学习最终 QueryBuilder；A2 完成后 A3 才读取 eDSL 并建模。较新的
 `GNNN-INPUTS-READY` 会使旧代下游 ready 状态失效，但保留既有文件供增量修改。
 因此一次新 generation 可以发布批准反馈，也可以在所有角色 idle 时原子更新
 binary、语言/CLI 教程，或同时完成二者，再沿相同依赖链重验。
 
-`ent-1/FEEDBACK.md` 在 plan 中是零字节文件。各角色 GOAL 与角色协议均列出完整
+`ent-1/FEEDBACK.md` 在 plan 中是零字节文件；两份 `QUERY-BUILDER-FEEDBACK.md`
+在消费者审查前为空白。各角色 GOAL 与角色协议均列出完整
 输入清单，并规定每个 generation marker 出现前后允许读取什么、允许执行什么。coordinator 对
 三个角色始终只发送“输入状态已变化”的固定消息。
 
@@ -87,3 +91,7 @@ execution 使用同一个 `telora.opencode-stats/v1` JSON schema，准备实验�
 
 完成后运行 `./oc-ctl validate t001` 与 `./oc-ctl finish t001`。`experiment.json`
 是 Host 配置，由 OpenCode 权限显式隐藏，不是角色输入。
+
+coordinator、A1、A2、A3 均固定使用 `deepseek/deepseek-v4-flash`；全局配置与角色
+frontmatter 双重声明同一模型，避免继承外部 OpenCode 默认值。角色可见目标只要求
+非法请求失败且不发布可信产物；诊断数量和恢复结构仅由 Host 隐藏评估。

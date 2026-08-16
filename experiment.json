@@ -55,7 +55,7 @@
         }
       },
       "a2": {
-        "learning_phases": ["language_learning", "query_builder_learning"],
+        "learning_phases": ["language_learning", "query_builder_draft_review"],
         "work_phase": "implementation",
         "work_files": ["ontology/src/graph.telora"],
         "artifacts": {
@@ -74,7 +74,7 @@
         }
       },
       "a3": {
-        "learning_phases": ["language_learning", "query_builder_learning", "edsl_learning"],
+        "learning_phases": ["language_learning", "query_builder_draft_review", "query_builder_final_learning", "edsl_learning"],
         "work_phase": "modeling",
         "work_files": ["ent-1/src/logistics.telora"],
         "artifacts": {

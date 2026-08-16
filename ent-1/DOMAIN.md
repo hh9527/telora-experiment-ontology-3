@@ -71,12 +71,8 @@ transform 必须产生逐字节相同的 Query，其中所有动态数据位于 
 QueryBuilder 将该 Plan 转成包含 `SELECT`、`FROM orders`、五个必要 join 与对应
 `GROUP BY` 的 Query。
 
-非法场景：`OrdersCreated`，按 `ProductCategory` 和 `DeliveryException` 分组。
-一次结果必须同时保留：
-
-- `DeliveryException` 缺少获准 capability；
-- `ProductCategory` 从 Order grain 只能经 fan-out 到达；
-- 不发布任何部分计划。
-- 不产生任何 SQL。
+非法场景：`OrdersCreated`，按 `ProductCategory` 和 `DeliveryException` 分组。该请求
+必须失败，不发布任何部分计划，也不产生 SQL。具体诊断数量和恢复求值结构不属于领域
+模型的验收目标。
 
 最终计划 revision 固定为 `logistics-ontology-v1`。

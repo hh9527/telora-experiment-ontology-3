@@ -9,7 +9,8 @@ EnterpriseKnowledge + Request -> Plan -> SQLite Query
 
 ## 受控输入
 
-对每个 generation 分别记录 plan commit/origin、Telora revision 与 binary hash、OpenCode/model 配置，以及
+所有角色固定使用 `deepseek/deepseek-v4-flash`。对每个 generation 分别记录 plan
+commit/origin、Telora revision 与 binary hash、OpenCode/model 配置，以及
 `experiment.json`、`opencode.json`、角色文件、语言/CLI 教程、三个 GOAL、两个
 DESIGN、DOMAIN 和该代 FEEDBACK 的 hash。只有 generation 输入一致的结果才直接比较；
 runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
@@ -35,12 +36,16 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
 是否产生诊断且无 Query。使用隐藏 Plan 覆盖投影、filter、join、aggregate、group、
 sort、limit、绑定顺序和重复转换。
 
+QueryBuilder 先发布草案，由 A2 根据 DESIGN、A3 根据 DOMAIN 独立审查；只有 A1
+处理两份反馈并重新验证后，最终公共契约才可供下游实现使用。
+
 ## A2 评估
 
 检查公共边界能否精确表达 EnterpriseKnowledge、PlanProfile 和
 `EnterpriseKnowledge -> Request -> Plan`。验证能力授权、grain、最短安全路径、
 目录序 tie-break、共享边去重、有向环、八边边界、fan-out-only、missing、请求覆盖、
-profile 覆盖和失败时不发布部分 Plan。A2 不得定义替代 Plan 或自行生成 SQL。
+profile 覆盖和失败时不发布部分 Plan。A2 不得定义替代 Plan 或自行生成 SQL。一次
+lowering 自然产生的诊断数量只由 Host 隐藏观察，不向角色暴露为验收目标。
 
 ## A3 评估
 

@@ -19,10 +19,13 @@ QueryBuilder 的公共交付，不得在 ontology 中另行定义。
 动态输入：
 
 - `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布当前 generation 输入已发布；
+- `control/GNNN-QUERY-BUILDER-DRAFT-READY`：同 generation 的该 marker 出现后读取
+  QueryBuilder 公共草案并完成能力审查，结果写入 `ontology/QUERY-BUILDER-FEEDBACK.md`；
 - `control/GNNN-QUERY-BUILDER-READY`：同 generation 的该 marker 出现后才能读取
   `query-builder/QUERY-BUILDER-TUTORIAL.md` 与 `query-builder/PUBLIC-CONTRACT.md`，
   并开始实现 eDSL；
 - `ent-1/FEEDBACK.md`：G001 时是空文件，后续 generation 可以包含 Host 批准反馈。
+- `ontology/QUERY-BUILDER-FEEDBACK.md`：A2 对 QueryBuilder 公共草案的审查交付。
 
 不得读取 QueryBuilder 私有设计、源码、tests 或 notes；不得读取企业 DOMAIN 或源码。
 A2 不得创建或修改任何 control marker。
@@ -33,7 +36,7 @@ A2 不得创建或修改任何 control marker。
 - `ontology/src/bin/main.telora`：虚构的小型知识经 Request 得到 Plan，并调用公共
   QueryBuilder 得到 Query 的成功示例；
 - `ontology/src/bin/verify.telora`：验证请求覆盖、关系选择和 profile 覆盖；
-- `ontology/src/bin/invalid.telora`：多个非法意图产生诊断且不发布 Plan/Query；
+- `ontology/src/bin/invalid.telora`：非法请求失败且不发布可信 Plan/Query；
 - `ontology/tests/ontology.telora`：公共类型与模块契约检查；
 - `ontology/DSL-TUTORIAL.md`：A3 可独立使用的教程；
 - `ontology/PUBLIC-CONTRACT.md`：EnterpriseKnowledge 输入与 lowering 保证；
