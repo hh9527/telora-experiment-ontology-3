@@ -434,7 +434,9 @@ let expr: Expr = 'Column({alias: "o", column: "id"});
 ```
 
 递归类型可以经完整、选择性、alias 或 open import 进入其他模块的函数与 family
-契约。Family 自身不能参数化递归、形成循环 family component，也不能调用同模块
+契约。同一模块也可以同时声明递归类型、引用它的 Plan/projection family、递归
+renderer 和多个 transform 契约；`check`/`show` 与严格运行使用相同的递归 component
+封闭规则，不需要为了 checker 人工拆分这些定义。Family 自身不能参数化递归、形成循环 family component，也不能调用同模块
 普通 helper；这是稳定的设计边界，不是待补齐的推断能力。需要共享递归骨架时，把
 递归部分封闭为 concrete type，只在递归结构之外参数化使用它的 capability、renderer
 或 dialect：
