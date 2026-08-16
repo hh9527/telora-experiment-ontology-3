@@ -502,10 +502,22 @@ JSON、`Any` 或 `Dyn` 绕过该限制。Array 元素、enum payload 和根 Byte
 
 多态函数不能作为“尚未实例化的普通值”依赖后续任意使用来决定全部类型参数。
 优先在调用点推断，必要时用 `@[...]` 显式应用，或给具名辅助函数声明完整契约。
-另外，泛型函数体内的局部类型标注不能引用外围模块级 `for` 引入的类型参数；把
-需要该参数的完整契约提升到模块级辅助函数上。
+定义契约中 `for(...)` 引入的类型参数在对应实现体的类型位置内可见，包括局部
+`let` 标注、嵌套类型应用和内层闭包注解；它们不会泄漏到相邻定义或模块结果。
+
+```telora
+def collect: for(N) Fn(Array(Item(N))) -> Array(Item(N)) = fn(items) {
+    let result: Array(Item(N)) = items;
+    result
+};
+```
 
 ## String 与诊断
+
+`std/string.chars: Fn(String) -> Array(String)` 按 Unicode scalar value 遍历
+String。每项是恰好包含一个 scalar 的 String；空串得到 `[]`，不产生首尾空串。
+它不按 grapheme cluster 或终端显示宽度切分，也不进行 Unicode normalization。
+需要逐字符检查时使用 `chars`，不要用 `string.split(text, "")` 模拟。
 
 普通字符串不进行插值。插值使用反引号：
 
