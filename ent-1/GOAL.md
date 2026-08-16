@@ -9,19 +9,34 @@ EnterpriseKnowledge + Request -> Plan -> Query
 
 不得查看上游私有实现，不得在企业 package 中重写 eDSL、Plan 或 QueryBuilder。
 
-## 稳定输入
+## 完整输入清单
 
+固定路径输入（内容属于当前 generation）：
+
+- `bin/telora`
 - `docs/LANG-TUTORIAL.md`
 - `docs/TELORA-CLI.md`
-- `query-builder/QUERY-BUILDER-TUTORIAL.md`
-- `query-builder/PUBLIC-CONTRACT.md`
-- `ontology/DSL-TUTORIAL.md`
-- `ontology/PUBLIC-CONTRACT.md`
 - `ent-1/GOAL.md`
 - `ent-1/DOMAIN.md`
+- `ent-1/telora-deps.json`
+- `ent-1/FEEDBACK.md`：G001 时是空文件，首次建模后由 A3 写入；Host 可以在后续
+  generation 发布前将它整理为批准反馈；
+- A3 自己已经产生的 `ent-1/src/**` 与 `ent-1/tests/**`
+
+generation marker：
+
+- `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布当前 generation 输入已发布；
+- `control/GNNN-QUERY-BUILDER-READY`：同 generation 的该 marker 出现后才能读取
+  `query-builder/QUERY-BUILDER-TUTORIAL.md` 与 `query-builder/PUBLIC-CONTRACT.md`，
+  学习 Plan、PlanProfile 和 SQLite Query；
+- `control/GNNN-EDSL-READY`：同 generation 的该 marker 出现后才能读取
+  `ontology/DSL-TUTORIAL.md` 与
+  `ontology/PUBLIC-CONTRACT.md`，并开始建模；
+- `control/GNNN-ENTERPRISE-READY`：由 coordinator 在 A3 完成该 generation 后创建。
 
 不得读取 `query-builder/{GOAL,DESIGN,NOTES,src,tests}` 或
 `ontology/{GOAL,DESIGN,NOTES,src,tests}`。
+A3 不得创建或修改任何 control marker。
 
 ## 交付物
 
@@ -58,5 +73,5 @@ query = query_builder.transform(plan)
 
 ## 上游更新复验
 
-收到复验指令时，重新读取两层公共交付，保持同一题面和验收场景，适配批准的 API
-更新并重新验证；更新 feedback 与 notes，不推测上游私有实现。
+后续 generation 的 eDSL ready 出现后，重新读取两层公共交付，保持同一题面和验收
+场景，适配批准更新并重新验证；更新 feedback 与 notes，不推测上游私有实现。

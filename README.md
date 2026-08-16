@@ -23,11 +23,27 @@ EnterpriseKnowledge + Request -> Plan -> Query
 - A1 只能实现 `query-builder/`，不接触 ontology 或企业领域。
 - A2 只能实现 `ontology/`，只看 A1 的公共教程和契约，不看其设计、源码和 notes。
 - A3 只能实现 `ent-1/`，只看 A1/A2 的公共教程和契约，不看上游私有实现。
-- coordinator 只按角色完成状态推进，不解释任务或修改文件。
+- coordinator 只按角色完成状态推进，不解释任务；它唯一能修改的是 `control/`
+  下协议规定的一次性 marker。
 
-A1 完成后 A2 才开始实现；A2 完成后 A3 才开始建模。A2、A3 可在等待上游时并行
-学习 Telora、CLI 和各自题面。A3 首次交付后流程挂起，Host 可筛选反馈并最多启动
-一次 A1 -> A2 -> A3 的增量修订。
+每轮输入使用一个 generation：
+
+```text
+G001-INPUTS-READY
+  -> G001-QUERY-BUILDER-READY
+  -> G001-EDSL-READY
+  -> G001-ENTERPRISE-READY
+```
+
+inputs-ready 后 A1/A2/A3 并行学习本代 Telora；A1 完成后，A2 与 A3 并行学习
+QueryBuilder，同时 A2 开始实现 eDSL；A2 完成后 A3 才读取 eDSL 并建模。较新的
+`GNNN-INPUTS-READY` 会使旧代下游 ready 状态失效，但保留既有文件供增量修改。
+因此一次新 generation 可以发布批准反馈，也可以在所有角色 idle 时原子更新
+binary、语言/CLI 教程，或同时完成二者，再沿相同依赖链重验。
+
+`ent-1/FEEDBACK.md` 在 plan 中是零字节文件。各角色 GOAL 与角色协议均列出完整
+输入清单，并规定每个 generation marker 出现前后允许读取什么、允许执行什么。coordinator 对
+三个角色始终只发送“输入状态已变化”的固定消息。
 
 ## 运行
 
@@ -43,12 +59,16 @@ A1 完成后 A2 才开始实现；A2 完成后 A3 才开始建模。A2、A3 可�
 ./oc-ctl start t001
 ```
 
-观察使用 `oc-ctl status/recent/children/child-recent/files`。首次交付结束后，如 Host
-已经把 `ent-1/FEEDBACK.md` 整理为批准反馈，可执行一次：
+观察使用 `oc-ctl status/recent/children/child-recent/files`。一代完成后，如 Host
+已经整理批准反馈，或者实验基础设施已经原子发布新的 binary 与教程，可启动下一代：
 
 ```bash
 ./oc-ctl iterate t001
 ```
+
+当前控制器对一次 execution 仍只开放一个追加 generation；generation 协议本身不
+复用 marker，未来放宽次数时无需修改角色语义。runtime 重发布必须由 Host/controller
+先完成文件替换与摘要记录，coordinator 只负责最后创建 inputs-ready。
 
 完成后运行 `./oc-ctl validate t001` 与 `./oc-ctl finish t001`。`experiment.json`
 是 Host 配置，由 OpenCode 权限显式隐藏，不是角色输入。

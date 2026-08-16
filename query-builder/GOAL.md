@@ -4,12 +4,25 @@
 Plan 算子、PlanProfile、Plan 验证和确定性的 SQLite `Plan -> Query`，不得包含
 ontology 概念或企业领域事实。本轮只实现 SQLite，不扩展其他 SQL 后端。
 
-## 稳定输入
+## 完整输入清单
 
+固定路径输入（内容属于当前 generation）：
+
+- `bin/telora`
 - `docs/LANG-TUTORIAL.md`
 - `docs/TELORA-CLI.md`
 - `query-builder/GOAL.md`
 - `query-builder/DESIGN.md`
+- `query-builder/telora-deps.json`
+- A1 自己已经产生的 `query-builder/src/**` 与 `query-builder/tests/**`
+
+动态输入：
+
+- `ent-1/FEEDBACK.md`：G001 时是空文件，后续 generation 可以包含 Host 批准反馈；
+- `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布该 generation 的 binary、教程、
+  设计和 feedback 已经原子发布，可以开始学习、实现或修订。
+
+不在清单中的文件不是 A1 输入。A1 不得创建或修改任何 control marker。
 
 ## 交付物
 
@@ -39,5 +52,6 @@ ontology 概念或企业领域事实。本轮只实现 SQLite，不扩展其他 
 
 ## 反馈修订
 
-收到 Host 批准的反馈时，只处理 `ent-1/FEEDBACK.md` 中明确归属于 QueryBuilder 的
-项目，记录接受或拒绝及理由，更新公共交付并重新验证。不得读取企业私有源码。
+G001 实现完整 QueryBuilder。后续 generation 重新阅读语言教程并使用新 binary，只
+处理 `ent-1/FEEDBACK.md` 中明确归属于 QueryBuilder 的批准项，同时重新验证既有
+交付；即使 feedback 为空，也要验证 runtime revision 是否影响实现。不得读取企业源码。

@@ -9,9 +9,10 @@ EnterpriseKnowledge + Request -> Plan -> SQLite Query
 
 ## 受控输入
 
-记录 plan commit/origin、Telora revision 与 binary hash、OpenCode/model 配置，以及
+对每个 generation 分别记录 plan commit/origin、Telora revision 与 binary hash、OpenCode/model 配置，以及
 `experiment.json`、`opencode.json`、角色文件、语言/CLI 教程、三个 GOAL、两个
-DESIGN 和 DOMAIN 的 hash。只有这些输入一致的 execution 才直接比较。
+DESIGN、DOMAIN 和该代 FEEDBACK 的 hash。只有 generation 输入一致的结果才直接比较；
+runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
 
 ## 隔离要求
 
@@ -19,8 +20,13 @@ DESIGN 和 DOMAIN 的 hash。只有这些输入一致的 execution 才直接比�
 - A2 只读 A1 的公共教程/契约，不读 A1 源码、私有设计、tests 或 notes。
 - A3 只读 A1/A2 公共教程/契约，不读上游源码、私有设计、tests 或 notes。
 - coordinator 保留并恢复同一组原生 child session，不补写任务定义。
+- `ent-1/FEEDBACK.md` 初始必须为零字节；角色只在各自 GOAL 列出的 marker 出现后
+  读取动态输入。
+- coordinator 只能创建协议列出的 `control/*` marker，对角色始终发送同一句状态
+  变化通知；核对 marker 创建顺序与交付就绪顺序一致。
 
-核对 ACP 事件与归档，确认角色没有通过 glob/grep/命令输出越过上述边界。
+核对 ACP 事件与归档，确认语言学习并行、A2/A3 的 QueryBuilder 学习并行，且角色
+没有提前读取动态输入或通过 glob/grep/命令输出越过边界。
 
 ## A1 评估
 
@@ -45,12 +51,13 @@ profile 覆盖和失败时不发布部分 Plan。A2 不得定义替代 Plan 或�
 ## 过程与反馈
 
 分别记录三个角色首次语言探索、首次写入、修正轮次、wall time、token、命令失败、
-类型擦除、公共泛型复杂度和文档/实现差异。A3 首次交付后 Host 判断 stop 或 iterate。
-只有当前语言能力内仍有明显的 QueryBuilder/eDSL 改进空间时，才批准一次反馈；语言、
-类型系统、标准库、CLI 和运行时问题转为独立 issue，不要求角色规避。
+类型擦除、公共泛型复杂度和文档/实现差异。每代 A3 交付后 Host 判断 stop 或发布
+下一 generation。只有当前语言能力内仍有明显的 QueryBuilder/eDSL 改进空间时，
+才发布批准反馈；语言机制问题仍转为独立 issue。若 Host 在 idle 边界发布新版
+binary/教程，必须记录原子发布证据，并把角色变化归属于 runtime epoch，而非自身修正。
 
-批准反馈按 QueryBuilder/eDSL 分区。可选修订严格按原 A1 -> 原 A2 -> 原 A3 各一次，
-不允许第二轮。记录修改前后隐藏用例差异。
+批准反馈按 QueryBuilder/eDSL 分区。当前 execution 最多追加一个 generation，并严格
+复用原 A1 -> 原 A2 -> 原 A3 session。记录各代隐藏用例差异。
 
 ## 归因
 

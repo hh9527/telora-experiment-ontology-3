@@ -4,16 +4,28 @@
 并实现 `EnterpriseKnowledge -> Request -> Plan`。Plan、PlanProfile 与 Query 只能使用
 QueryBuilder 的公共交付，不得在 ontology 中另行定义。
 
-## 稳定输入
+## 完整输入清单
 
+固定路径输入（内容属于当前 generation）：
+
+- `bin/telora`
 - `docs/LANG-TUTORIAL.md`
 - `docs/TELORA-CLI.md`
-- `query-builder/QUERY-BUILDER-TUTORIAL.md`
-- `query-builder/PUBLIC-CONTRACT.md`
 - `ontology/GOAL.md`
 - `ontology/DESIGN.md`
+- `ontology/telora-deps.json`
+- A2 自己已经产生的 `ontology/src/**` 与 `ontology/tests/**`
+
+动态输入：
+
+- `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布当前 generation 输入已发布；
+- `control/GNNN-QUERY-BUILDER-READY`：同 generation 的该 marker 出现后才能读取
+  `query-builder/QUERY-BUILDER-TUTORIAL.md` 与 `query-builder/PUBLIC-CONTRACT.md`，
+  并开始实现 eDSL；
+- `ent-1/FEEDBACK.md`：G001 时是空文件，后续 generation 可以包含 Host 批准反馈。
 
 不得读取 QueryBuilder 私有设计、源码、tests 或 notes；不得读取企业 DOMAIN 或源码。
+A2 不得创建或修改任何 control marker。
 
 ## 交付物
 
@@ -44,5 +56,5 @@ mapping。不得用最终 builder、预渲染 SQL、`Any`、`Dyn` 或 String 身
 
 ## 反馈修订
 
-收到 Host 批准的反馈时，只处理明确归属于 eDSL 的项目。先重新读取 QueryBuilder
-公共交付以适配其批准更新，再记录每项接受或拒绝，更新实现与文档并重新验证。
+后续 generation 的 QueryBuilder ready 后，重新读取其公共交付，只处理明确归属于
+eDSL 的批准项目并重新验证既有交付；feedback 为空时仍验证 runtime revision 影响。

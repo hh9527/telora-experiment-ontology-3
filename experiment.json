@@ -8,6 +8,12 @@
     "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "128000"
   },
   "permission_preflight": {
+    "coordinator": [
+      "touch control/G001-INPUTS-READY",
+      "touch control/G001-QUERY-BUILDER-READY",
+      "touch control/G001-EDSL-READY",
+      "touch control/G001-ENTERPRISE-READY"
+    ],
     "a1": [
       "./bin/telora run main -C query-builder",
       "./bin/telora run invalid -C query-builder --best-effort",
@@ -45,5 +51,5 @@
     {"name": "enterprise-verify", "cwd": "ent-1", "command": ["../bin/telora", "run", "verify"], "required": true}
   ],
   "observe": ["query-builder", "ontology", "ent-1"],
-  "archive": ["docs", "query-builder", "ontology", "ent-1", ".opencode", "opencode.json", "experiment.json"]
+  "archive": ["control", "docs", "query-builder", "ontology", "ent-1", ".opencode", "opencode.json", "experiment.json"]
 }
