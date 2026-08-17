@@ -30,13 +30,13 @@ EnterpriseKnowledge 至少表达：
 Request 是查询方提交的有类型意图。参考形状为：
 
 ```telora
-@struct type Request(Id, Subject, Input) = {
+type Request(Id, Subject, Input) = struct {
   id: Id,
   subject: Subject,
   input: Input,
 };
 
-@struct type QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput) = {
+type QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput) = struct {
   measures: Array(Request(MeasureId, Subject, MeasureInput)),
   dimensions: Array(Request(DimensionId, Subject, DimensionInput)),
 };

@@ -37,7 +37,7 @@ String 充当所有语义身份。不得接受预渲染的 SELECT/JOIN/GROUP BY 
 公共 `Query` 的概念形状为：
 
 ```telora
-@struct type Query = {
+type Query = struct {
   sql: String,
   bindings: Array(Val),
 };

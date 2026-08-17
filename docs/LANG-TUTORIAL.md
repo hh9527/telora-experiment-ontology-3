@@ -156,19 +156,26 @@ Telora 在拓宽结果之前合并分支证据：泛型代码中的 `if` 若为�
 ## Struct、enum 与模式
 
 ```telora
-@enum type Entity = {
-    Ticket: 'None,
-    Agent: 'None,
+type Entity = enum {
+    'Ticket,
+    'Agent,
 };
 
-@struct type Requirement = {
+type Requirement = struct {
     target: Entity,
     reason: String,
 };
 ```
 
-Struct 和 enum 都是封闭的。字段使用 `.field`；enum 值使用 Atom 或 Tagged
-语法。
+Struct 和 enum 都是封闭的具名声明。不同声明即使结构相同也不是同一个类型；alias、
+import 和 reexport 保留原声明身份。字段使用 `.field`；enum 值使用 Atom 或 Tagged
+语法。`struct` 和 `enum` 只用于 `type` 的直接初始化，不能作为普通函数调用；
+`@struct`、`@enum` 不是可用的兼容语法。
+
+声明上下文中的记录或 tag 字面量会取得预期类型的声明身份。外部 JSON/TOML/YAML
+数据可以在 `codec.decode` 或 `validate(Type, raw)` 这类有精确 witness 的边界取得
+身份。已经产生的匿名记录或另一个声明类型的值，不能只因结构相同而在后续标注、
+参数或返回值边界被重新标记；应在字面量的产生点给出声明契约。
 
 ```telora
 match result {
@@ -256,8 +263,7 @@ type Pair = Tuple([Int, String]);
 参数化声明定义可复用的 TypeMetadata family：
 
 ```telora
-@struct
-type Capability(Id, Input, Output) = {
+type Capability(Id, Input, Output) = struct {
     id: Id,
     lower: Fn(Id, Input) -> Option(Output),
 };
@@ -270,8 +276,8 @@ family 在值位置也是普通的有类型元数据能力。family 必须接收
 类型或另一个 family，且不受声明顺序影响：
 
 ```telora
-@struct type Build(Value) = {state: BuildState, value: Option(Value)};
-@enum type BuildState = {Ready: 'None, Pending: 'None};
+type Build(Value) = struct {state: BuildState, value: Option(Value)};
+type BuildState = enum {'Ready, 'Pending};
 ```
 
 family 依赖图中的环、family 自身的参数化递归，以及对普通局部辅助项的依赖仍然
@@ -289,8 +295,7 @@ import "std/codec" as codec;
 import "std/json" as json;
 import "std/result" as result;
 
-@struct
-type Query = {
+type Query = struct {
     subject: String,
     limit: Int,
 };
@@ -320,24 +325,21 @@ Struct 和 enum 默认从同一份 TypeMetadata 派生 codec 与 JSON schema。�
 
 ```telora
 @json.rename_all('CamelCase)
-@struct
-type Details = {
+type Details = struct {
     order_id: String,
     @json.default('None)
     note: Option(String),
 };
 
-@struct
-type Envelope = {
+type Envelope = struct {
     kind: String,
     @json.flatten details: Details,
 };
 
 @json.untagged
-@enum
-type Scalar = {
-    Text: String,
-    Count: Int,
+type Scalar = enum {
+    'Text(String),
+    'Count(Int),
 };
 ```
 
@@ -405,15 +407,15 @@ family 契约。巨大 union 错误应首先检查是否缺少这个公共期望
 
 ### enum payload 不能是匿名 Struct 类型
 
-`@enum` 声明中的 variant payload 必须引用具名类型。匿名 Struct payload 会报
-`variants.X.kind must be an Atom`：
+Enum variant payload 是 TypeMetadata 表达式。`struct { ... }` 只允许作为直接
+`type` 初始化器，因此匿名 Struct 不能嵌入 payload；应先声明具名 Struct：
 
 ```telora
-# 不支持：Column 的 payload 是匿名 Struct 类型
-# @enum type Expr = { Column: {alias: String, column: String} };
+# 不支持：struct 初始化器不能嵌入 enum payload
+# type Expr = enum {'Column(struct {alias: String, column: String})};
 
-@struct type ColumnRef = {alias: String, column: String};
-@enum type Expr = {Column: ColumnRef};
+type ColumnRef = struct {alias: String, column: String};
+type Expr = enum {'Column(ColumnRef)};
 
 # 值位置的匿名记录仍然合法
 let expr: Expr = 'Column({alias: "o", column: "id"});
@@ -425,10 +427,10 @@ let expr: Expr = 'Column({alias: "o", column: "id"});
 递归位置擦除为 `Any`。Family 可以引用已经封闭的非参数化递归具体类型：
 
 ```telora
-@enum type Expr = {Literal: Value, Call: CallExpr};
-@struct type CallExpr = {name: String, args: Array(Expr)};
+type Expr = enum {'Literal(Value), 'Call(CallExpr)};
+type CallExpr = struct {name: String, args: Array(Expr)};
 
-@struct type Dialect(Context) = {
+type Dialect(Context) = struct {
     render: Fn(Context, Expr) -> String,
 };
 ```
@@ -442,10 +444,10 @@ renderer 和多个 transform 契约；`check`/`show` 与严格运行使用相同
 或 dialect：
 
 ```telora
-@enum type Expr = {Literal: Value, Call: CallExpr};
-@struct type CallExpr = {name: String, args: Array(Expr)};
+type Expr = enum {'Literal(Value), 'Call(CallExpr)};
+type CallExpr = struct {name: String, args: Array(Expr)};
 
-@struct type Renderer(Context) = {
+type Renderer(Context) = struct {
     render: Fn(Context, Expr) -> String,
 };
 ```
@@ -485,11 +487,11 @@ JSON 没有原生 Bytes 类别，当前 codec 和 schema 不为 `Bytes` 选择�
 codec/schema 的 eDSL 时，当前应从公共 `Val`、Model、Plan 和输出类型中排除 Bytes：
 
 ```telora
-@enum type Val = {
-    String: String,
-    Int: Int,
-    Float: Float,
-    Bool: Bool,
+type Val = enum {
+    'String(String),
+    'Int(Int),
+    'Float(Float),
+    'Bool(Bool),
 };
 ```
 
