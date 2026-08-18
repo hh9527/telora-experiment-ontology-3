@@ -31,10 +31,24 @@
       "./bin/oc-task mark-done a3 lang-learn-a3.rc",
       "./bin/oc-task mark-done a3 qb-review-a3.rc",
       "./bin/oc-task mark-done a3 ent-1-model.rc",
+      "./bin/oc-task mark-done a3 ent-1-query-surface.rc",
       "./bin/telora run main -C ent-1",
+      "./bin/telora run query-surface -C ent-1",
       "./bin/telora run invalid -C ent-1 --best-effort",
       "./bin/telora check @test/logistics.telora -C ent-1",
+      "./bin/telora check @test/query-surface.telora -C ent-1",
       "./bin/telora show @bin/main.telora -C ent-1"
+    ],
+    "a4": [
+      "./bin/oc-task next a4",
+      "./bin/oc-task mark-done a4 lang-learn-a4.rc",
+      "./bin/oc-task mark-done a4 intent-1.rc",
+      "./bin/telora run main -C intent-1",
+      "./bin/telora run verify -C intent-1",
+      "./bin/telora run invalid -C intent-1",
+      "./bin/telora run invalid -C intent-1 --best-effort",
+      "./bin/telora check @test/intent.telora -C intent-1",
+      "./bin/telora show @bin/main.telora -C intent-1"
     ]
   },
   "metrics": {
@@ -79,16 +93,35 @@
       },
       "a3": {
         "learning_phases": ["language_learning", "query_builder_draft_review", "query_builder_final_learning", "edsl_learning"],
-        "work_phase": "modeling",
-        "work_files": ["ent-1/src/logistics.telora"],
+        "work_phases": [
+          {"name": "modeling", "files": ["ent-1/src/model.telora", "ent-1/src/bin/main.telora"]},
+          {"name": "query_surface_design", "files": ["ent-1/src/query.telora", "ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md"]}
+        ],
         "artifacts": {
           "code": {
-            "core": ["ent-1/src/logistics.telora"],
+            "private_model": ["ent-1/src/model.telora"],
+            "public_facade": ["ent-1/src/query.telora"],
             "entries": ["ent-1/src/bin/*.telora"],
-            "tests": ["ent-1/tests/logistics.telora"]
+            "tests": ["ent-1/tests/*.telora"]
           },
           "documents": {
-            "docs": ["ent-1/FEEDBACK.md", "ent-1/NOTES.md"]
+            "private_docs": ["ent-1/FEEDBACK.md", "ent-1/NOTES.md"],
+            "public_docs": ["ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md"]
+          }
+        }
+      },
+      "a4": {
+        "learning_phases": ["language_learning", "public_query_surface_learning"],
+        "work_phase": "intent_modeling",
+        "work_files": ["intent-1/src/request.telora", "intent-1/src/bin/main.telora"],
+        "artifacts": {
+          "code": {
+            "request": ["intent-1/src/request.telora"],
+            "entries": ["intent-1/src/bin/*.telora"],
+            "tests": ["intent-1/tests/intent.telora"]
+          },
+          "documents": {
+            "docs": ["intent-1/FEEDBACK.md", "intent-1/NOTES.md"]
           }
         }
       }
@@ -112,7 +145,7 @@
   "workflow": {
     "schema": "telora.opencode-node-workflow/v1",
     "start_nodes": ["lang.ready", "domain.ready"],
-    "finish_node": "ent-1-model.ready",
+    "finish_node": "intent-1.ready",
     "stop_path": "control/STOP",
     "nodes": [
       {
@@ -121,7 +154,7 @@
       },
       {
         "id": "domain.ready",
-        "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json", "ontology/GOAL.md", "ontology/DESIGN.md", "ontology/telora-deps.json", "ent-1/GOAL.md", "ent-1/DOMAIN.md", "ent-1/telora-deps.json"]
+        "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json", "ontology/GOAL.md", "ontology/DESIGN.md", "ontology/telora-deps.json", "ent-1/GOAL.md", "ent-1/DOMAIN.md", "ent-1/telora-deps.json", "intent-1/GOAL.md", "intent-1/INTENT.md", "intent-1/FEEDBACK.md", "intent-1/telora-deps.json"]
       },
       {
         "id": "qb-feedback-a2.feedback",
@@ -142,6 +175,7 @@
       },
       {"id": "lang-learn-a2.rc", "role": "a2", "needs": ["lang.ready", "domain.ready"]},
       {"id": "lang-learn-a3.rc", "role": "a3", "needs": ["lang.ready", "domain.ready"]},
+      {"id": "lang-learn-a4.rc", "role": "a4", "needs": ["lang.ready", "domain.ready"]},
       {
         "id": "qb-review-a2.rc",
         "role": "a2",
@@ -169,9 +203,29 @@
         "id": "ent-1-model.rc",
         "role": "a3",
         "needs": ["lang.ready", "domain.ready", "qb.ready", "edsl.ready"],
-        "checks": ["ent-1/src/**/*.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md"]
+        "checks": ["ent-1/src/model.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md"]
       },
-      {"id": "ent-1-model.ready", "needs": ["ent-1-model.rc"]}
+      {"id": "ent-1-model.ready", "needs": ["ent-1-model.rc"]},
+      {
+        "id": "ent-1-query-feedback-a4.feedback",
+        "needs": ["intent-1.rc"],
+        "observes": "ent-1-query-surface.rc"
+      },
+      {
+        "id": "ent-1-query-surface.rc",
+        "role": "a3",
+        "needs": ["ent-1-model.ready"],
+        "inputs": ["ent-1-query-feedback-a4.feedback"],
+        "checks": ["ent-1/src/query.telora", "ent-1/src/bin/query-surface.telora", "ent-1/tests/query-surface.telora", "ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md"]
+      },
+      {"id": "ent-1-query-surface.ready", "needs": ["ent-1-query-surface.rc"]},
+      {
+        "id": "intent-1.rc",
+        "role": "a4",
+        "needs": ["lang-learn-a4.rc", "ent-1-query-surface.ready"],
+        "checks": ["intent-1/src/request.telora", "intent-1/src/bin/main.telora", "intent-1/src/bin/verify.telora", "intent-1/src/bin/invalid.telora", "intent-1/tests/intent.telora", "intent-1/FEEDBACK.md", "intent-1/NOTES.md"]
+      },
+      {"id": "intent-1.ready", "needs": ["intent-1.rc"]}
     ],
     "tasks": [
       {
@@ -197,6 +251,14 @@
         "inputs": [],
         "outputs": [],
         "instruction": "完整学习本次发布的 Telora 教程和 CLI，并阅读 ent-1/GOAL.md 与 DOMAIN.md。可以用允许的命令探索语言，但此任务不要读取上游公共交付，也不要开始最终建模。"
+      },
+      {
+        "id": "lang-learn-a4.rc",
+        "role": "a4",
+        "needs": ["lang.ready", "domain.ready"],
+        "inputs": [],
+        "outputs": [],
+        "instruction": "完整学习本次发布的 Telora 教程和 CLI，并阅读 intent-1/GOAL.md 与 INTENT.md。可以用允许的命令探索语言，但不要读取尚未放行的公共查询面，也不要开始构造 Request。"
       },
       {
         "id": "qb-review-a2.rc",
@@ -229,8 +291,24 @@
         "needs": ["qb.ready", "edsl.ready", "lang-learn-a3.rc"],
         "absorbs": ["qb-review-a3.rc"],
         "inputs": ["query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md", "ontology/DSL-TUTORIAL.md", "ontology/PUBLIC-CONTRACT.md", "ent-1/FEEDBACK.md"],
-        "outputs": ["ent-1/src/**/*.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md"],
-        "instruction": "完整学习 ontology eDSL 的公共教程和契约，依据 ent-1/GOAL.md 与 DOMAIN.md 建立 EnterpriseKnowledge，验证合法与非法 Request 的 Plan -> Query 全链路，并更新 FEEDBACK.md 与 NOTES.md。"
+        "outputs": ["ent-1/src/model.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md"],
+        "instruction": "完整学习 ontology eDSL 的公共教程和契约，依据 ent-1/GOAL.md 与 DOMAIN.md 建立私有 EnterpriseKnowledge，验证合法与非法 Request 的 Plan -> Query 全链路，并更新 FEEDBACK.md 与 NOTES.md。本任务不要提前设计面向 A4 的公共查询面。"
+      },
+      {
+        "id": "ent-1-query-surface.rc",
+        "role": "a3",
+        "needs": ["ent-1-model.ready"],
+        "inputs": ["ent-1/src/model.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md", "ent-1-query-feedback-a4.feedback"],
+        "outputs": ["ent-1/src/query.telora", "ent-1/src/bin/query-surface.telora", "ent-1/tests/query-surface.telora", "ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md"],
+        "instruction": "从已经放行的同一份私有 EnterpriseKnowledge 建立公共查询 facade，导出业务 vocabulary、typed Request 与已捕获私有知识的 lower(Request) -> Query，并编写查询设计者可独立使用的教程和契约。用不针对任何隐藏意图的通用 typed Request 入口和测试实际验证 facade。公共交付不得复制第二份领域知识，不得泄漏表、列、alias、join mapping、SQL 片段或模板，也不得读取或猜测 A4 的私有意图。若 Host 发布 ent-1-query-feedback-a4.feedback，完整读取并修订同一交付；完成实际验证后发布本任务。"
+      },
+      {
+        "id": "intent-1.rc",
+        "role": "a4",
+        "needs": ["lang-learn-a4.rc", "ent-1-query-surface.ready"],
+        "inputs": ["ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md", "intent-1/FEEDBACK.md"],
+        "outputs": ["intent-1/src/request.telora", "intent-1/src/bin/main.telora", "intent-1/src/bin/verify.telora", "intent-1/src/bin/invalid.telora", "intent-1/tests/intent.telora", "intent-1/FEEDBACK.md", "intent-1/NOTES.md"],
+        "instruction": "学习已放行的公共查询面，把 INTENT.md 的合法与非法文字意图忠实表达为公共 typed Request，并且只调用公共 lower。严格验证合法 Query 的确定性以及非法请求失败且无部分 Query；记录公共模型的具体歧义、缺口或物理泄漏，不得构造 Plan、SQL 或诊断容器。"
       }
     ]
   },
@@ -240,8 +318,11 @@
     {"name": "ontology", "cwd": "ontology", "command": ["../bin/telora", "run", "main"], "required": true},
     {"name": "ontology-verify", "cwd": "ontology", "command": ["../bin/telora", "run", "verify"], "required": true},
     {"name": "enterprise", "cwd": "ent-1", "command": ["../bin/telora", "run", "main"], "required": true},
-    {"name": "enterprise-verify", "cwd": "ent-1", "command": ["../bin/telora", "run", "verify"], "required": true}
+    {"name": "enterprise-verify", "cwd": "ent-1", "command": ["../bin/telora", "run", "verify"], "required": true},
+    {"name": "enterprise-query-surface", "cwd": "ent-1", "command": ["../bin/telora", "run", "query-surface"], "required": true},
+    {"name": "intent", "cwd": "intent-1", "command": ["../bin/telora", "run", "main"], "required": true},
+    {"name": "intent-verify", "cwd": "intent-1", "command": ["../bin/telora", "run", "verify"], "required": true}
   ],
-  "observe": ["query-builder", "ontology", "ent-1"],
-  "archive": ["control", ".oc-task", "docs", "query-builder", "ontology", "ent-1", ".opencode", "opencode.json", "experiment.json"]
+  "observe": ["query-builder", "ontology", "ent-1", "intent-1"],
+  "archive": ["control", ".oc-task", "docs", "query-builder", "ontology", "ent-1", "intent-1", ".opencode", "opencode.json", "experiment.json"]
 }

@@ -34,9 +34,9 @@ EnterpriseKnowledge + Request -> Plan -> Query
 `ontology/{GOAL,DESIGN,NOTES,src,tests}`。
 任务就绪与重跑由 `oc-task` 根据文件时间戳确定。
 
-## 交付物
+## 私有模型交付物（`ent-1-model.rc`）
 
-- `ent-1/src/`：封闭 vocabulary、领域事实、能力、表达式、关系 mapping、
+- `ent-1/src/model.telora`：封闭 vocabulary、领域事实、能力、表达式、关系 mapping、
   PlanProfile，以及实例化的 EnterpriseKnowledge；
 - `ent-1/src/bin/main.telora`：合法 Request 得到完整 Plan 和 Query；
 - `ent-1/src/bin/verify.telora`：验证 Plan 覆盖、profile 约束和 Query 确定性；
@@ -46,8 +46,22 @@ EnterpriseKnowledge + Request -> Plan -> Query
 - `ent-1/QUERY-BUILDER-FEEDBACK.md`：最终建模前对 QueryBuilder 草案的能力审查；
 - `ent-1/NOTES.md`：模型选择、验证结果和风险。
 
+## 公共查询面交付物（`ent-1-query-surface.rc`）
+
+- `ent-1/src/query.telora`：从同一份私有 `knowledge` 形成的公共 facade，只导出业务
+  vocabulary、typed Request 与 `lower(Request) -> Query`；
+- `ent-1/src/bin/query-surface.telora` 与 `ent-1/tests/query-surface.telora`：使用不针对
+  隐藏意图的通用 typed Request，实际验证 facade 可加载、lowering 确定且结果可编码；
+- `ent-1/QUERY-DESIGNER-TUTORIAL.md`：不懂物理模型的查询设计者可独立使用的教程；
+- `ent-1/PUBLIC-QUERY-CONTRACT.md`：公共词汇、Request 形状、组合/grain/capability
+  规则、失败语义和 lowering 保证。
+
 不得修改 `ent-1/telora-deps.json`。不得复制共享算法、定义替代 Plan、用任意 builder
 手工组装 Plan、使用预渲染 SQL、`Any`、`Dyn` 或 String 语义身份。
+
+公共查询面必须从私有 `knowledge` 捕获 lowering，不能手工维护第二份领域知识。公共
+文档和 facade 不得泄漏表名、列名、alias、join 路径/mapping、SQL 片段或模板。A3 永远
+不得读取 `intent-1/INTENT.md`；公共教程不能针对具体隐藏意图预写 Request 答案。
 
 合法入口必须分别保留并验证 Plan 与 Query：
 
@@ -67,6 +81,18 @@ query = query_builder.transform(plan)
 ```
 
 完成时报告真实结果与具体反馈，不要求 Git commit。
+
+Host 审核私有模型并发布 `ent-1-model.ready` 后，`oc-task` 才会返回
+`ent-1-query-surface.rc`。完成公共 facade、教程和契约及其验证后，执行
+`oc-task mark-done a3 ent-1-query-surface.rc`。私有模型与公共查询面是两个独立 Host
+审核边界，但都由同一个 A3 session 和同一份 EnterpriseKnowledge 维护。
+
+公共面阶段至少实际运行：
+
+```text
+./bin/telora run query-surface -C ent-1
+./bin/telora check @test/query-surface.telora -C ent-1
+```
 
 ## 上游更新复验
 
