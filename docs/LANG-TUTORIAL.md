@@ -182,6 +182,24 @@ import 和 reexport 保留原声明身份。字段使用 `.field`；enum 值使�
 身份。已经产生的匿名记录或另一个声明类型的值，不能只因结构相同而在后续标注、
 参数或返回值边界被重新标记；应在字面量的产生点给出声明契约。
 
+静态约束、checked cast 和动态投影是三种不同能力：
+
+```telora
+let empty = [].ty!(Array(Int));       // 只协助静态推断，无运行时调用
+let truth = 'True.ty!(Bool);
+
+let user_result = raw.cast!(User);   // Result(User, String)
+
+import "std/dyn" as dyn;
+let projected = dyn.project@[User](package); // Option(User)
+```
+
+`ty!` 必须能在编译期证明目标类型，不能从 `Any` 或 `Dyn` 恢复类型。普通赋值只允许
+`T -> Any`，不允许未经检查的 `Any -> T`。`cast!` 只验证表示并保留原数据图：raw
+Dict/Atom 可以在完整匹配时取得目标 witness，但两个不同具名类型不能按结构互转；
+String parse、Int/Float 转换、`Value -> model`、rename/default/flatten 都属于 codec，
+不属于 cast。Dyn 投影只在打包时的 canonical 类型与目标完全相同时成功，不做结构猜测。
+
 ```telora
 match result {
     'Some(value) => value,
