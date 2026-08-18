@@ -49,10 +49,12 @@ left <= right
 left >= right
 ```
 
-相等和不等允许异构值；类型或形状不同时结果为 False。普通复合值保持结构相等
-语义，两个具名 struct/enum 值还要求相同的名义类型。dict、Atom 或 Tagged 字面量
-可以从另一侧获得 exact nominal context，例如 `wrapper == 'Box("x")` 和
-`'Box("x") == wrapper`；不需要先单独标注字面量。有序比较只接受类型相同的
+相等和不等要求两侧具有同一静态语义类型；已知类型或形状不兼容时会在前端报错，
+而不是返回 False。普通复合值保持结构相等语义，两个具名 struct/enum 值还要求
+相同的名义类型。dict、Atom 或 Tagged 字面量可以从另一侧获得 exact nominal
+context，例如 `wrapper == 'Box("x")` 和 `'Box("x") == wrapper`；不需要先单独
+标注字面量。显式 Any 或 Union 边界内的不同运行时 variant 可以比较并返回 False。
+有序比较只接受类型相同的
 `Int`、`Float` 或 `String` 操作数；不存在混合数值强制转换。String 按其内部
 UTF-8 字节序列精确地进行字典序比较，不做规范化，不使用 locale 规则、大小写
 折叠或自然数排序。
