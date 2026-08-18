@@ -650,6 +650,11 @@ export { Entity, Requirement, compile };
 import 是静态的。模块只暴露显式 export。eDSL 必须导出向企业作者承诺的每个
 类型和函数。
 
+默认 prelude 相当于可遮蔽的隐式 open import，只为本模块尚未声明的名字提供
+fallback。`validate` 等 prelude 名不是保留字，本地 binding 可以正常使用同名；
+仍需访问内建项时使用显式别名，例如
+`import "core/prelude" { validate as builtin_validate };`。
+
 `ontology/src/bin/` 或 `ent-1/src/bin/` 下的入口由 Host 以 `@bin/...` 选择；
 `tests/` 下的入口以 `@test/...` 选择。从这些入口导入可复用代码时，应使用显式源码根路径：
 
