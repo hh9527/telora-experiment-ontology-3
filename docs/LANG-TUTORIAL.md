@@ -622,13 +622,15 @@ Array/Tuple/Dict/tagged 构造、`map`、`enumerate`、`push` 和 `zip` 等保�
 失败子节点，以便继续健康成员。`any` 的健康 True 和 `all` 的健康 False 可以确定性短路；
 `find` 若在候选成员之前已有失败 predicate，则成员身份不确定并传播 Fail。
 这些失败槽位不是语言值或额外 variant，源码不能匹配或恢复。可达性只决定还可继续
-哪些诊断计算；只要出现任何 error，本轮 World 导出就整体失去意义，即使干净的最终根
-仍可算出，普通 module/codec/Host 边界也不会发布它。需要业务恢复时仍显式使用
+哪些诊断计算；只要出现任何 error，本轮命令的最终 Host 结果就整体失去意义，即使干净的
+最终根仍可算出，codec、最终返回值和 SystemEffect 也不会越过 Host 边界。Module 在
+WorkWorld/MainWorld 间的内部固化不是 Host 发布，可以保留 Fail。需要业务恢复时仍显式使用
 `Option`、`Result` 或领域 enum。
 
-依赖库失败时，工具可以把它作为内部 `UntrustedModule` 恢复状态继续检查其他无关依赖；
-这不是可以 import 的普通 Module，也不会把原始 error 降级。命令最终选择的根模块只要
-恢复图中仍有 error，就不会产生可交付导出。
+依赖库失败时仍是普通 Module。Module 的 `Available/Unavailable` 只表达源码是否存在；
+定义和表达式分别携带 `Known/Unknown/Incomputable` 等事实状态。内部 Module 可以同时保留
+健康 export 和含 Fail 的 export：下游读取健康项可继续工作，读取失败项则传播同一个 Fail。
+没有 `PartialModule`/`UntrustedModule` 语言实体，也不会把原始 error 降级。
 
 不要仅仅为了向 Host 报告诊断，就把 `Fn(Input) -> Output` 改成公开的
 `Fn(Input) -> Outcome(Output, Rejection)`，也不要在 eDSL 中复制一套
@@ -684,8 +686,8 @@ export 转换为 `Output(String)` effect；
 ./bin/telora check @test/ontology.telora -C ontology
 ```
 
-`check` 用 best-effort 模式求值所选模块的导出图，并以严格 finalization 决定退出
-状态；任何 error 或不完整模块都会非零退出。它不进行 Entry 调度，也不会调用已经
+`check` 用统一 Module 管线的 best-effort 策略求值所选模块；任何 error 都会非零退出，
+但内部图仍可保留以查询健康事实。它不进行 Entry 调度，也不会调用已经
 导出的函数，因此不等价于应用行为验收。成功路径必须由普通 `run` 严格执行；遇到
 失败时可以用 `run --best-effort` 扩大诊断覆盖，并检查非零退出、Host 诊断和无
 output。不能仅以 `check` 成功作为行为证据。
