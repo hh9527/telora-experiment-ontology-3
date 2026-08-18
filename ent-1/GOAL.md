@@ -11,7 +11,7 @@ EnterpriseKnowledge + Request -> Plan -> Query
 
 ## 完整输入清单
 
-固定路径输入（内容属于当前 generation）：
+固定路径输入（内容属于当前发布轮次）：
 
 - `bin/telora`
 - `docs/LANG-TUTORIAL.md`
@@ -19,27 +19,20 @@ EnterpriseKnowledge + Request -> Plan -> Query
 - `ent-1/GOAL.md`
 - `ent-1/DOMAIN.md`
 - `ent-1/telora-deps.json`
-- `ent-1/FEEDBACK.md`：G001 时是空文件，首次建模后由 A3 写入；Host 可以在后续
-  generation 发布前将它整理为批准反馈；
+- `ent-1/FEEDBACK.md`：首次为空，首次建模后由 A3 写入；Host 可以在后续发布轮次
+  前将它整理为批准反馈；
 - A3 自己已经产生的 `ent-1/src/**` 与 `ent-1/tests/**`
 
-generation marker：
+动态输入由 `oc-task` 按任务依赖开放：
 
-- `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布当前 generation 输入已发布；
-- `control/GNNN-QUERY-BUILDER-DRAFT-READY`：同 generation 的该 marker 出现后读取
-  QueryBuilder 公共草案，依据 DOMAIN 完成能力审查并写入
-  `ent-1/QUERY-BUILDER-FEEDBACK.md`，但不开始最终建模；
-- `control/GNNN-QUERY-BUILDER-READY`：同 generation 的该 marker 出现后才能读取
-  `query-builder/QUERY-BUILDER-TUTORIAL.md` 与 `query-builder/PUBLIC-CONTRACT.md`，
-  学习 Plan、PlanProfile 和 SQLite Query；
-- `control/GNNN-EDSL-READY`：同 generation 的该 marker 出现后才能读取
-  `ontology/DSL-TUTORIAL.md` 与
-  `ontology/PUBLIC-CONTRACT.md`，并开始建模；
-- `control/GNNN-ENTERPRISE-READY`：由 coordinator 在 A3 完成该 generation 后创建。
+- `qb-review-a3.rc`：读取 QueryBuilder 公共候选，依据 DOMAIN 完成能力审查并
+  写入 `ent-1/QUERY-BUILDER-FEEDBACK.md`，但不开始最终建模；
+- `ent-1-model.rc`：在 `qb.ready` 与 `edsl.ready` 均发布后，读取 QueryBuilder 和
+  ontology 公共教程与契约并开始最终建模。
 
 不得读取 `query-builder/{GOAL,DESIGN,NOTES,src,tests}` 或
 `ontology/{GOAL,DESIGN,NOTES,src,tests}`。
-A3 不得创建或修改任何 control marker。
+任务就绪与重跑由 `oc-task` 根据文件时间戳确定。
 
 ## 交付物
 
@@ -77,5 +70,6 @@ query = query_builder.transform(plan)
 
 ## 上游更新复验
 
-后续 generation 的 eDSL ready 出现后，重新读取两层公共交付，保持同一题面和验收
-场景，适配批准更新并重新验证；更新 feedback 与 notes，不推测上游私有实现。
+后续发布轮次的 `ent-1-model.rc` 就绪后，重新读取两层公共交付，保持同一题面和验收
+场景，适配批准更新并重新验证；更新 feedback 与 notes，不推测上游私有实现。每项
+任务完成后必须执行对应的 `oc-task mark-done`。

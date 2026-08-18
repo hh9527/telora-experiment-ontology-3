@@ -6,7 +6,7 @@ QueryBuilder 的公共交付，不得在 ontology 中另行定义。
 
 ## 完整输入清单
 
-固定路径输入（内容属于当前 generation）：
+固定路径输入（内容属于当前发布轮次）：
 
 - `bin/telora`
 - `docs/LANG-TUTORIAL.md`
@@ -18,17 +18,13 @@ QueryBuilder 的公共交付，不得在 ontology 中另行定义。
 
 动态输入：
 
-- `control/GNNN-INPUTS-READY`：编号最大的 marker 宣布当前 generation 输入已发布；
-- `control/GNNN-QUERY-BUILDER-DRAFT-READY`：同 generation 的该 marker 出现后读取
-  QueryBuilder 公共草案并完成能力审查，结果写入 `ontology/QUERY-BUILDER-FEEDBACK.md`；
-- `control/GNNN-QUERY-BUILDER-READY`：同 generation 的该 marker 出现后才能读取
-  `query-builder/QUERY-BUILDER-TUTORIAL.md` 与 `query-builder/PUBLIC-CONTRACT.md`，
-  并开始实现 eDSL；
-- `ent-1/FEEDBACK.md`：G001 时是空文件，后续 generation 可以包含 Host 批准反馈。
+- `oc-task` 返回或吸收 `qb-review-a2.rc` 后读取 QueryBuilder 公共候选并完成能力
+  审查，结果写入 `ontology/QUERY-BUILDER-FEEDBACK.md`；
+- `oc-task` 返回 `edsl.rc` 后读取 QueryBuilder 已放行的公共教程与契约并实现 eDSL；
 - `ontology/QUERY-BUILDER-FEEDBACK.md`：A2 对 QueryBuilder 公共草案的审查交付。
 
 不得读取 QueryBuilder 私有设计、源码、tests 或 notes；不得读取企业 DOMAIN 或源码。
-A2 不得创建或修改任何 control marker。
+任务就绪与重跑由 `oc-task` 根据文件时间戳确定。
 
 ## 交付物
 
@@ -59,5 +55,5 @@ mapping。不得用最终 builder、预渲染 SQL、`Any`、`Dyn` 或 String 身
 
 ## 反馈修订
 
-后续 generation 的 QueryBuilder ready 后，重新读取其公共交付，只处理明确归属于
-eDSL 的批准项目并重新验证既有交付；feedback 为空时仍验证 runtime revision 影响。
+`qb.ready` 更新使 `edsl.rc` 重新就绪时，重新读取 QueryBuilder 公共交付并验证
+既有 eDSL。每项任务完成后必须执行对应的 `oc-task mark-done`，发布新的 `edsl.rc`。

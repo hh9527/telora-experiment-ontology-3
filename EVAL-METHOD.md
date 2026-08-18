@@ -9,10 +9,10 @@ EnterpriseKnowledge + Request -> Plan -> SQLite Query
 
 ## 受控输入
 
-所有角色固定使用 `deepseek/deepseek-v4-flash`。对每个 generation 分别记录 plan
+所有角色固定使用 `deepseek/deepseek-v4-flash`。对每个输入发布轮次分别记录 plan
 commit/origin、Telora revision 与 binary hash、OpenCode/model 配置，以及
 `experiment.json`、`opencode.json`、角色文件、语言/CLI 教程、三个 GOAL、两个
-DESIGN、DOMAIN 和该代 FEEDBACK 的 hash。只有 generation 输入一致的结果才直接比较；
+DESIGN、DOMAIN 和该轮 FEEDBACK 的 hash。只有输入一致的结果才直接比较；
 runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
 
 ## 隔离要求
@@ -20,11 +20,16 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
 - A1 只读自身设计与源码，不读 ontology 和企业领域。
 - A2 只读 A1 的公共教程/契约，不读 A1 源码、私有设计、tests 或 notes。
 - A3 只读 A1/A2 公共教程/契约，不读上游源码、私有设计、tests 或 notes。
-- coordinator 保留并恢复同一组原生 child session，不补写任务定义。
-- `ent-1/FEEDBACK.md` 初始必须为零字节；角色只在各自 GOAL 列出的 marker 出现后
-  读取动态输入。
-- coordinator 只能创建协议列出的 `control/*` marker，对角色始终发送同一句状态
-  变化通知；核对 marker 创建顺序与交付就绪顺序一致。
+- coordinator 只启动一组原生 child session，不补写任务定义或观察交付状态。
+- `ent-1/FEEDBACK.md` 初始必须为零字节；角色只在 `oc-task` 返回对应任务后读取动态输入。
+- 核对 `.oc-task` 的 claim/done 证据与实际交付顺序一致；coordinator 不创建 marker。
+- Agent 只通过 `mark-done <role> <name.rc>` 控制自己的 `.rc`；Host 只控制
+  `.feedback` 和 `.ready`。
+- review 独立执行时直接领取 `qb-review-<role>.rc`；review 与 build 同时 runnable 时，
+  build 必须吸收 review，先发布 review `.rc` 并保持父 claim，再发布 build `.rc`。
+- 核对每个 `.ready` 都晚于对应 `.rc` 和必要评审，且下游首次输出发生在 `.ready` 之后。
+- Host 发布的新反馈必须使旧 `.rc` 失效；上游重新执行后旧 `.ready` 必须失效并重新
+  人工审核。不得以文件存在或自动验证成功替代人工放行。
 
 核对 ACP 事件与归档，确认语言学习并行、A2/A3 的 QueryBuilder 学习并行，且角色
 没有提前读取动态输入或通过 glob/grep/命令输出越过边界。
@@ -36,8 +41,10 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
 是否产生诊断且无 Query。使用隐藏 Plan 覆盖投影、filter、join、aggregate、group、
 sort、limit、绑定顺序和重复转换。
 
-QueryBuilder 先发布草案，由 A2 根据 DESIGN、A3 根据 DOMAIN 独立审查；只有 A1
-处理两份反馈并重新验证后，最终公共契约才可供下游实现使用。
+QueryBuilder 发布候选后，由 A2 根据 DESIGN、A3 根据 DOMAIN 审查。该审查可以独立
+执行，也可以由同角色已放行的 build 吸收。Host 决定哪些
+意见属于 A1 可处理范围，并通过 `.feedback` 发布；语言机制问题不得强塞给 A1。只有
+Host 发布 `qb.ready` 后，公共契约才可供下游实现使用。
 
 ## A2 评估
 
@@ -55,14 +62,13 @@ lowering 自然产生的诊断数量只由 Host 隐藏观察，不向角色暴�
 
 ## 过程与反馈
 
-分别记录三个角色首次语言探索、首次写入、修正轮次、wall time、token、命令失败、
-类型擦除、公共泛型复杂度和文档/实现差异。每代 A3 交付后 Host 判断 stop 或发布
-下一 generation。只有当前语言能力内仍有明显的 QueryBuilder/eDSL 改进空间时，
+分别记录三个角色首次语言探索、首次写入、反馈修正、wall time、token、命令失败、
+类型擦除、公共泛型复杂度和文档/实现差异。每轮 A3 交付后 Host 判断 stop 或发布
+下一轮输入。只有当前语言能力内仍有明显的 QueryBuilder/eDSL 改进空间时，
 才发布批准反馈；语言机制问题仍转为独立 issue。若 Host 在 idle 边界发布新版
 binary/教程，必须记录原子发布证据，并把角色变化归属于 runtime epoch，而非自身修正。
 
-批准反馈按 QueryBuilder/eDSL 分区。当前 execution 最多追加一个 generation，并严格
-复用原 A1 -> 原 A2 -> 原 A3 session。记录各代隐藏用例差异。
+反馈按目标 `.rc` 分区。记录每次 `.feedback`、修订 `.rc` 和重新放行 `.ready` 的时间戳。
 
 ## 归因
 

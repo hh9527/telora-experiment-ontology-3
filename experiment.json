@@ -8,25 +8,29 @@
     "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "128000"
   },
   "permission_preflight": {
-    "coordinator": [
-      "touch control/G001-INPUTS-READY",
-      "touch control/G001-QUERY-BUILDER-READY",
-      "touch control/G001-EDSL-READY",
-      "touch control/G001-ENTERPRISE-READY"
-    ],
     "a1": [
+      "./bin/oc-task next a1",
+      "./bin/oc-task mark-done a1 qb.rc",
       "./bin/telora run main -C query-builder",
       "./bin/telora run invalid -C query-builder --best-effort",
       "./bin/telora check @test/query-builder.telora -C query-builder",
       "./bin/telora show @bin/main.telora -C query-builder"
     ],
     "a2": [
+      "./bin/oc-task next a2",
+      "./bin/oc-task mark-done a2 lang-learn-a2.rc",
+      "./bin/oc-task mark-done a2 qb-review-a2.rc",
+      "./bin/oc-task mark-done a2 edsl.rc",
       "./bin/telora run main -C ontology",
       "./bin/telora run invalid -C ontology --best-effort",
       "./bin/telora check @test/ontology.telora -C ontology",
       "./bin/telora show @bin/main.telora -C ontology"
     ],
     "a3": [
+      "./bin/oc-task next a3",
+      "./bin/oc-task mark-done a3 lang-learn-a3.rc",
+      "./bin/oc-task mark-done a3 qb-review-a3.rc",
+      "./bin/oc-task mark-done a3 ent-1-model.rc",
       "./bin/telora run main -C ent-1",
       "./bin/telora run invalid -C ent-1 --best-effort",
       "./bin/telora check @test/logistics.telora -C ent-1",
@@ -93,12 +97,143 @@
   "artifacts": [
     {
       "name": "telora",
-      "source": "target/debug/telora",
+      "source": "target/release/telora",
       "to": "bin/telora",
-      "build": ["cargo", "build", "-p", "telora"],
+      "build": ["cargo", "build", "--release", "-p", "telora"],
+      "mode": "0555"
+    },
+    {
+      "name": "oc-task",
+      "source": "tools/opencode_experiment/task_cli.py",
+      "to": "bin/oc-task",
       "mode": "0555"
     }
   ],
+  "workflow": {
+    "schema": "telora.opencode-node-workflow/v1",
+    "start_nodes": ["lang.ready", "domain.ready"],
+    "finish_node": "ent-1-model.ready",
+    "stop_path": "control/STOP",
+    "nodes": [
+      {
+        "id": "lang.ready",
+        "checks": ["bin/telora", "docs/LANG-TUTORIAL.md", "docs/TELORA-CLI.md"]
+      },
+      {
+        "id": "domain.ready",
+        "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json", "ontology/GOAL.md", "ontology/DESIGN.md", "ontology/telora-deps.json", "ent-1/GOAL.md", "ent-1/DOMAIN.md", "ent-1/telora-deps.json"]
+      },
+      {
+        "id": "qb-feedback-a2.feedback",
+        "needs": ["qb-review-a2.rc"],
+        "observes": "qb.rc"
+      },
+      {
+        "id": "qb-feedback-a3.feedback",
+        "needs": ["qb-review-a3.rc"],
+        "observes": "qb.rc"
+      },
+      {
+        "id": "qb.rc",
+        "role": "a1",
+        "needs": ["lang.ready", "domain.ready"],
+        "inputs": ["qb-feedback-a2.feedback", "qb-feedback-a3.feedback"],
+        "checks": ["query-builder/src/**/*.telora", "query-builder/src/bin/main.telora", "query-builder/src/bin/verify.telora", "query-builder/src/bin/invalid.telora", "query-builder/tests/query-builder.telora", "query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md", "query-builder/NOTES.md"]
+      },
+      {"id": "lang-learn-a2.rc", "role": "a2", "needs": ["lang.ready", "domain.ready"]},
+      {"id": "lang-learn-a3.rc", "role": "a3", "needs": ["lang.ready", "domain.ready"]},
+      {
+        "id": "qb-review-a2.rc",
+        "role": "a2",
+        "needs": ["qb.rc", "lang-learn-a2.rc"],
+        "checks": ["ontology/QUERY-BUILDER-FEEDBACK.md"]
+      },
+      {
+        "id": "qb-review-a3.rc",
+        "role": "a3",
+        "needs": ["qb.rc", "lang-learn-a3.rc"],
+        "checks": ["ent-1/QUERY-BUILDER-FEEDBACK.md"]
+      },
+      {
+        "id": "qb.ready",
+        "needs": ["qb.rc"]
+      },
+      {
+        "id": "edsl.rc",
+        "role": "a2",
+        "needs": ["lang.ready", "domain.ready", "qb.ready"],
+        "checks": ["ontology/src/**/*.telora", "ontology/src/bin/main.telora", "ontology/src/bin/verify.telora", "ontology/src/bin/invalid.telora", "ontology/tests/ontology.telora", "ontology/DSL-TUTORIAL.md", "ontology/PUBLIC-CONTRACT.md", "ontology/NOTES.md"]
+      },
+      {"id": "edsl.ready", "needs": ["edsl.rc"]},
+      {
+        "id": "ent-1-model.rc",
+        "role": "a3",
+        "needs": ["lang.ready", "domain.ready", "qb.ready", "edsl.ready"],
+        "checks": ["ent-1/src/**/*.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md"]
+      },
+      {"id": "ent-1-model.ready", "needs": ["ent-1-model.rc"]}
+    ],
+    "tasks": [
+      {
+        "id": "qb.rc",
+        "role": "a1",
+        "needs": ["lang.ready", "domain.ready"],
+        "inputs": [],
+        "outputs": ["query-builder/src/**/*.telora", "query-builder/src/bin/main.telora", "query-builder/src/bin/verify.telora", "query-builder/src/bin/invalid.telora", "query-builder/tests/query-builder.telora", "query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md", "query-builder/NOTES.md"],
+        "instruction": "完整学习本次发布的 Telora 教程和 CLI，依据 query-builder/GOAL.md 与 DESIGN.md 实现并验证 QueryBuilder。若 control/nodes/qb-feedback-*.feedback 中存在 Host 发布的反馈，必须完整读取、修订并重验；完成全部交付后标记任务完成。"
+      },
+      {
+        "id": "lang-learn-a2.rc",
+        "role": "a2",
+        "needs": ["lang.ready", "domain.ready"],
+        "inputs": [],
+        "outputs": [],
+        "instruction": "完整学习本次发布的 Telora 教程和 CLI，并阅读 ontology/GOAL.md 与 DESIGN.md。可以用允许的命令探索语言，但此任务不要读取 QueryBuilder 公共交付，也不要开始实现 eDSL。"
+      },
+      {
+        "id": "lang-learn-a3.rc",
+        "role": "a3",
+        "needs": ["lang.ready", "domain.ready"],
+        "inputs": [],
+        "outputs": [],
+        "instruction": "完整学习本次发布的 Telora 教程和 CLI，并阅读 ent-1/GOAL.md 与 DOMAIN.md。可以用允许的命令探索语言，但此任务不要读取上游公共交付，也不要开始最终建模。"
+      },
+      {
+        "id": "qb-review-a2.rc",
+        "role": "a2",
+        "needs": ["qb.rc", "lang-learn-a2.rc"],
+        "inputs": ["query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md"],
+        "outputs": ["ontology/QUERY-BUILDER-FEEDBACK.md"],
+        "instruction": "完整阅读 QueryBuilder 公共草案，依据 ontology/DESIGN.md 审查 Plan 算子和 profile 能力。把具体缺口或明确的未发现阻断结论写入 ontology/QUERY-BUILDER-FEEDBACK.md；不要开始实现 eDSL。"
+      },
+      {
+        "id": "qb-review-a3.rc",
+        "role": "a3",
+        "needs": ["qb.rc", "lang-learn-a3.rc"],
+        "inputs": ["query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md"],
+        "outputs": ["ent-1/QUERY-BUILDER-FEEDBACK.md"],
+        "instruction": "完整阅读 QueryBuilder 公共草案，依据 ent-1/DOMAIN.md 审查真实领域所需算子和 Plan 形状。把具体缺口或明确的未发现阻断结论写入 ent-1/QUERY-BUILDER-FEEDBACK.md；不要开始最终建模。"
+      },
+      {
+        "id": "edsl.rc",
+        "role": "a2",
+        "needs": ["qb.ready", "lang-learn-a2.rc"],
+        "absorbs": ["qb-review-a2.rc"],
+        "inputs": ["query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md"],
+        "outputs": ["ontology/src/**/*.telora", "ontology/src/bin/main.telora", "ontology/src/bin/verify.telora", "ontology/src/bin/invalid.telora", "ontology/tests/ontology.telora", "ontology/DSL-TUTORIAL.md", "ontology/PUBLIC-CONTRACT.md", "ontology/NOTES.md"],
+        "instruction": "学习 QueryBuilder 最终公共交付，依据 ontology/GOAL.md 与 DESIGN.md 实现并验证 EnterpriseKnowledge eDSL。只处理 Host feedback 中明确归属于 eDSL 的项目；完成全部规定验证后标记本任务完成。"
+      },
+      {
+        "id": "ent-1-model.rc",
+        "role": "a3",
+        "needs": ["qb.ready", "edsl.ready", "lang-learn-a3.rc"],
+        "absorbs": ["qb-review-a3.rc"],
+        "inputs": ["query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md", "ontology/DSL-TUTORIAL.md", "ontology/PUBLIC-CONTRACT.md", "ent-1/FEEDBACK.md"],
+        "outputs": ["ent-1/src/**/*.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md"],
+        "instruction": "完整学习 ontology eDSL 的公共教程和契约，依据 ent-1/GOAL.md 与 DOMAIN.md 建立 EnterpriseKnowledge，验证合法与非法 Request 的 Plan -> Query 全链路，并更新 FEEDBACK.md 与 NOTES.md。"
+      }
+    ]
+  },
   "validation": [
     {"name": "query-builder", "cwd": "query-builder", "command": ["../bin/telora", "run", "main"], "required": true},
     {"name": "query-builder-verify", "cwd": "query-builder", "command": ["../bin/telora", "run", "verify"], "required": true},
@@ -108,5 +243,5 @@
     {"name": "enterprise-verify", "cwd": "ent-1", "command": ["../bin/telora", "run", "verify"], "required": true}
   ],
   "observe": ["query-builder", "ontology", "ent-1"],
-  "archive": ["control", "docs", "query-builder", "ontology", "ent-1", ".opencode", "opencode.json", "experiment.json"]
+  "archive": ["control", ".oc-task", "docs", "query-builder", "ontology", "ent-1", ".opencode", "opencode.json", "experiment.json"]
 }

@@ -23,31 +23,54 @@ EnterpriseKnowledge + Request -> Plan -> Query
 - A1 只能实现 `query-builder/`，不接触 ontology 或企业领域。
 - A2 只能实现 `ontology/`，只看 A1 的公共教程和契约，不看其设计、源码和 notes。
 - A3 只能实现 `ent-1/`，只看 A1/A2 的公共教程和契约，不看上游私有实现。
-- coordinator 只按角色完成状态推进，不解释任务；它唯一能修改的是 `control/`
-  下协议规定的一次性 marker。
+- coordinator 只启动 A1/A2/A3 各一次，此后不再解释或推进任务。
 
-每轮输入使用一个 generation：
+流程由 `experiment.json.workflow` 中的文件 DAG 决定：
 
 ```text
-G001-INPUTS-READY
-  -> G001-QUERY-BUILDER-DRAFT-READY
-  -> G001-QUERY-BUILDER-REVIEW-READY
-  -> G001-QUERY-BUILDER-READY
-  -> G001-EDSL-READY
-  -> G001-ENTERPRISE-READY
+lang.ready + domain.ready
+  -> A1 QueryBuilder -> qb.rc
+  -> A2/A3 可独立发布 qb-review-a2.rc / qb-review-a3.rc
+  -> Host 可选发布 qb-feedback-a2.feedback / qb-feedback-a3.feedback -> A1 修订 qb.rc
+  -> Host 发布 qb.ready
+  -> A2 ontology eDSL -> edsl.rc（可吸收尚未完成的 A2 review）
+  -> Host 发布 edsl.ready
+  -> A3 EnterpriseKnowledge -> ent-1-model.rc（可吸收尚未完成的 A3 review）
+  -> Host 发布 ent-1-model.ready
 ```
 
-inputs-ready 后 A1/A2/A3 并行学习本代 Telora；A1 发布可执行 QueryBuilder 草案后，
-A2 依据 DESIGN、A3 依据 DOMAIN 并行审查公共能力，A1 处理两份反馈并定稿。之后
-A2 开始实现 eDSL，A3 学习最终 QueryBuilder；A2 完成后 A3 才读取 eDSL 并建模。较新的
-`GNNN-INPUTS-READY` 会使旧代下游 ready 状态失效，但保留既有文件供增量修改。
-因此一次新 generation 可以发布批准反馈，也可以在所有角色 idle 时原子更新
-binary、语言/CLI 教程，或同时完成二者，再沿相同依赖链重验。
+start 后 A1/A2/A3 并行学习本轮 Telora；A1 发布可执行 QueryBuilder 候选后，A2 依据
+DESIGN、A3 依据 DOMAIN 审查公共能力。若此时只有 `qb.rc`，角色领取独立 review；若
+Host 已发布 `qb.ready` 且角色的 build 也 runnable，调度器优先领取 build，并把尚未
+完成的 review 放入其 `absorbed` 列表。角色在 build 过程中先 `mark-done` review `.rc`，
+父 claim 保持有效，再完成 build `.rc`。原始评审不阻断 Host 放行。
+
+每个角色循环调用 `bin/oc-task next <role>` 领取唯一 runnable task，完成后调用
+`mark-done <role> <name.rc>`。任务名就是其 `.rc` 节点，后缀必须显式给出。Agent 只
+控制配置赋予自己的 `.rc`；Host 独占 `.feedback` 和 `.ready`。
+输出文件只用于完整性检查，不因存在而触发下游。每次正式跨角色移交必须经过 Host
+审核并发布 `.ready`；下游在此之前没有可领取的输出任务。claim 使用文件锁原子创建，
+任务运行期间输入变化会拒绝完成并要求重新领取。
+
+常用人工控制命令是：
+
+```bash
+./oc-ctl tasks t001
+./oc-ctl feedback t001 qb-feedback-a2.feedback --body-file /tmp/a2-feedback.md
+./oc-ctl ready t001 qb.ready
+./oc-ctl ready t001 edsl.ready
+./oc-ctl ready t001 ent-1-model.ready
+```
+
+工具会拒绝提前放行或发布空反馈。新反馈晚于 `qb.rc` 时使候选失效；A1 修订并重新发布
+后，旧反馈自动变为历史版本。重新发布 `.rc` 也会使旧 `.ready` 失效，必须重新审核。
+一次反馈发布会立即使当前候选失效，因此 Host 应先筛选并合并本次准备采纳的意见，再
+通过对应来源节点发布一个 body；若之后还要发布另一来源反馈，须等待 A1 产生新候选且
+A2/A3 完成对新候选的评审，这会形成下一次显式修订。
 
 `ent-1/FEEDBACK.md` 在 plan 中是零字节文件；两份 `QUERY-BUILDER-FEEDBACK.md`
-在消费者审查前为空白。各角色 GOAL 与角色协议均列出完整
-输入清单，并规定每个 generation marker 出现前后允许读取什么、允许执行什么。coordinator 对
-三个角色始终只发送“输入状态已变化”的固定消息。
+在消费者审查前为空白。各角色 GOAL 与角色协议均列出完整输入清单，并规定各 task
+可以读取和修改的内容。`experiment.json` 与 `.oc-task/**` 对角色不可见。
 
 ## 运行
 
@@ -63,7 +86,8 @@ binary、语言/CLI 教程，或同时完成二者，再沿相同依赖链重验
 ./oc-ctl start t001
 ```
 
-观察使用 `oc-ctl status/recent/children/child-recent/files`。成本与产出统计使用：
+观察使用 `oc-ctl status/recent/children/child-recent/files`；DAG、claim 和阻塞状态使用
+`./oc-ctl tasks t001`。成本与产出统计使用：
 
 ```bash
 ./oc-ctl stats t001
@@ -78,20 +102,10 @@ execution 使用同一个 `telora.opencode-stats/v1` JSON schema，准备实验�
 会冻结到 execution state。未配置角色仍会统计时间、token 与模型，但阶段明确标记为
 `unclassified`，不推测学习/工作边界。
 
-一代完成后，如 Host
-已经整理批准反馈，或者实验基础设施已经原子发布新的 binary 与教程，可启动下一代：
-
-```bash
-./oc-ctl iterate t001
-```
-
-当前控制器对一次 execution 仍只开放一个追加 generation；generation 协议本身不
-复用 marker，未来放宽次数时无需修改角色语义。runtime 重发布必须由 Host/controller
-先完成文件替换与摘要记录，coordinator 只负责最后创建 inputs-ready。
-
 完成后运行 `./oc-ctl validate t001` 与 `./oc-ctl finish t001`。`experiment.json`
 是 Host 配置，由 OpenCode 权限显式隐藏，不是角色输入。
 
-coordinator、A1、A2、A3 均固定使用 `deepseek/deepseek-v4-flash`；全局配置与角色
+准备阶段使用 `cargo build --release -p telora`，并把 release binary 固定复制到实验
+工作区。coordinator、A1、A2、A3 均固定使用 `deepseek/deepseek-v4-flash`；全局配置与角色
 frontmatter 双重声明同一模型，避免继承外部 OpenCode 默认值。角色可见目标只要求
 非法请求失败且不发布可信产物；诊断数量和恢复结构仅由 Host 隐藏评估。
