@@ -308,15 +308,28 @@ family 依赖图中的环、family 自身的参数化递归，以及对普通局
 只在其外部参数化 capability、renderer 或 dialect。标识、payload、映射和计划使用
 模型提供的具体类型。不得用 `Any`、`Dyn` 或 String 标识替代未知关系。
 
-## JSON、codec 与 schema
+## Value、格式、codec 与 schema
 
-JSON 值是 Telora 的普通不可变值。`std/json` 负责 JSON 文本和 schema，
-`std/codec` 根据 TypeMetadata 在 JSON 值与有类型值之间转换：
+JSON、YAML 和 TOML 统一归一化为 `std/value.Value`。它是普通的 nominal recursive
+enum，不是 `Any`、VM raw graph 或 lossless AST：
+
+```telora
+type Value = enum {
+    'None, 'True, 'False,
+    'Int(Int), 'Float(Float), 'String(String), 'Bytes(Bytes),
+    'Array(Array(Value)), 'Object(Dict(Value)),
+    'LocalDate(String), 'LocalTime(String),
+    'LocalDateTime(String), 'OffsetDateTime(String),
+};
+```
+
+`std/json` 负责 JSON 文本和 schema，`std/codec` 在 Value 与有类型值之间转换：
 
 ```telora
 import "std/codec" as codec;
 import "std/json" as json;
 import "std/result" as result;
+import "std/value" { Value };
 
 type Query = struct {
     subject: String,
@@ -326,16 +339,22 @@ type Query = struct {
 let raw = json.parse("{\"subject\":\"orders\",\"limit\":20}")
     |> result.unwrap;
 let query: Query = codec.decode(Query, raw) |> result.unwrap;
-let encoded = codec.encode(Query, query) |> result.unwrap;
+let encoded: Value = codec.encode(Value, query) |> result.unwrap;
 let compact: String = json.stringify(encoded);
 let pretty: String = encoded |> json.stringify_pretty(2);
 let query_schema = json.schema(Query);
 ```
 
 也可以用 `json.decode(Query, text)` 直接把 JSON 文本解码成 `Query`。两条路径的
-区别是边界位置：`json.parse` 只解析文本并返回 JSON 值；`codec.decode` 对已经
-存在的 JSON 值施加类型契约。`codec.encode` 返回 JSON 值，只有需要文本边界时
-才调用 `json.stringify` 或 `json.stringify_pretty`。
+区别是边界位置：`json.parse` 只解析文本并返回 Value；`codec.decode` 对已经存在的
+Value 施加类型契约。`codec.encode` 的首个参数固定为 canonical `Value` witness，
+返回 Value；只有需要 JSON 文本边界时才调用 `json.stringify` 或
+`json.stringify_pretty`。`yaml.parse` 和 `toml.parse` 同样返回
+`Result(Value, BlameError)`。
+
+Value 的每个递归 Array/Object 子节点都具有同一个 canonical TypeId，可以穷尽
+match。`cast!` 只做表示不变的 checked refinement，不能解开 Value variant；
+Value 与领域 model 的 rename/default/flatten 转换只能由 codec 完成。
 
 上述 parse、decode 和 encode 都返回带 native opaque error 的 `Result`。普通源码
 不命名该错误类型。调用者确实需要根据失败恢复或选择其他路径时，使用 `match` 保留
@@ -372,7 +391,18 @@ Bool 的函数省略满足条件的字段。Decorator 是产生 attribute 的普
 codec 和 schema 读取相同 attribute，因此二者不会形成两套独立模型。
 
 JSON/TOML/YAML 文件也可以作为静态数据模块 import。它们在封闭模块图建立时由
-Host 加载，不是运行时文件 IO；JSON 解析严格拒绝重复 key，并保留字段来源。
+Host 加载，不是运行时文件 IO，并且只导出 `data: Value`：
+
+```telora
+import "./request.json" { data as request };
+import "./policy.yaml" { data as policy };
+import "./config.toml" { data as config };
+```
+
+JSON/TOML 拒绝越界 Int 和非有限 Float。YAML 只接受 String mapping key，拒绝
+custom tag，限制 alias 深度和展开量，并确定性展开 mapping merge；`!!binary`
+经过 canonical base64 校验后成为 `'Bytes(...)`。格式归一化保留 array index/object
+key 的来源路径，内部 Value wrapper 不增加路径层级。
 不要为了打印中间值而手写 `*_desc` 函数：公开结果需要稳定 JSON 形状时使用
 codec，需要临时观察任意局部值时使用 `dbg!`：
 
@@ -480,20 +510,21 @@ type Renderer(Context) = struct {
 
 ### 复杂 family 值的 codec witness
 
-`codec.encode(Type, value)` 的首个参数是与值静态类型匹配的 `TypeOf(A)` witness。
-对于参数很多的 concrete family，在每个调用点重复全部 family 实参既冗长又容易
-漂移。规范做法是在定义模块中建立一次 concrete type alias，并导出 alias 或有类型
-的边界函数：
+`codec.encode(Value, value)` 的首个参数固定为公共 Value witness；codec 从有类型值
+已经携带的 canonical witness 读取 source schema。对于参数很多的 concrete family，
+规范做法仍是在定义模块中建立一次 concrete type alias，并导出 alias 或有类型的
+边界函数：
 
 ```telora
 import "std/codec" as codec;
+import "std/value" { Value };
 
 type Snapshot = ArtifactSnapshot(
     Entity, Dimension, Measure, QueryIntent, Expr, Plan, SqlQuery
 );
 
 def encode_snapshot = fn(value: Snapshot) {
-    codec.encode(Snapshot, value)
+    codec.encode(Value, value)
 };
 
 export { Snapshot, encode_snapshot };
@@ -505,8 +536,9 @@ export { Snapshot, encode_snapshot };
 
 ### Bytes 没有默认 JSON 表示
 
-JSON 没有原生 Bytes 类别，当前 codec 和 schema 不为 `Bytes` 选择隐式文本编码。
-包含裸 `Bytes` 的类型不能作为完整 JSON codec/schema 边界。设计需要稳定 JSON
+公共 Value 可以显式携带 `'Bytes(Bytes)`，YAML `!!binary` 也映射到该 variant；但
+JSON 没有原生 Bytes 类别，`json.stringify` 和 schema 不为 Bytes 选择隐式文本编码。
+包含裸 `Bytes` 的类型不能作为完整 JSON text/schema 边界。设计需要稳定 JSON
 codec/schema 的 eDSL 时，当前应从公共 `Val`、Model、Plan 和输出类型中排除 Bytes：
 
 ```telora
