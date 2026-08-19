@@ -25,16 +25,16 @@ EnterpriseKnowledge + Request -> Plan -> Query
 
 动态输入由 `oc-task` 按任务依赖开放：
 
-- `qb-review-a3.rc`：读取 QueryBuilder 公共候选，依据 DOMAIN 完成能力审查并
+- `qb-review.a3`：读取 QueryBuilder 公共候选，依据 DOMAIN 完成能力审查并
   写入 `ent-1/QUERY-BUILDER-FEEDBACK.md`，但不开始最终建模；
-- `ent-1-model.rc`：在 `qb.ready` 与 `edsl.ready` 均发布后，读取 QueryBuilder 和
+- `ent-1-model.a3`：在 `qb` 与 `edsl` 均发布后，读取 QueryBuilder 和
   ontology 公共教程与契约并开始最终建模。
 
 不得读取 `query-builder/{GOAL,DESIGN,NOTES,src,tests}` 或
 `ontology/{GOAL,DESIGN,NOTES,src,tests}`。
 任务就绪与重跑由 `oc-task` 根据文件时间戳确定。
 
-## 私有模型交付物（`ent-1-model.rc`）
+## 私有模型交付物（`ent-1-model.a3`）
 
 - `ent-1/src/model.telora`：封闭 vocabulary、领域事实、能力、表达式、关系 mapping、
   PlanProfile，以及实例化的 EnterpriseKnowledge；
@@ -46,7 +46,7 @@ EnterpriseKnowledge + Request -> Plan -> Query
 - `ent-1/QUERY-BUILDER-FEEDBACK.md`：最终建模前对 QueryBuilder 草案的能力审查；
 - `ent-1/NOTES.md`：模型选择、验证结果和风险。
 
-## 公共查询面交付物（`ent-1-query-surface.rc`）
+## 公共查询面交付物（`ent-1-query-surface.a3`）
 
 - `ent-1/src/query.telora`：从同一份私有 `knowledge` 形成的公共 facade，只导出业务
   vocabulary、typed Request 与 `lower(Request) -> Query`；
@@ -82,9 +82,9 @@ query = query_builder.transform(plan)
 
 完成时报告真实结果与具体反馈，不要求 Git commit。
 
-Host 审核私有模型并发布 `ent-1-model.ready` 后，`oc-task` 才会返回
-`ent-1-query-surface.rc`。完成公共 facade、教程和契约及其验证后，执行
-`oc-task mark-done a3 ent-1-query-surface.rc`。私有模型与公共查询面是两个独立 Host
+Host 审核私有模型并发布 `ent-1-model` 后，`oc-task` 才会返回
+`ent-1-query-surface.a3`。完成公共 facade、教程和契约及其验证后，执行
+`oc-task submit a3 ent-1-query-surface.a3`。私有模型与公共查询面是两个独立 Host
 审核边界，但都由同一个 A3 session 和同一份 EnterpriseKnowledge 维护。
 
 公共面阶段至少实际运行：
@@ -96,6 +96,6 @@ Host 审核私有模型并发布 `ent-1-model.ready` 后，`oc-task` 才会返�
 
 ## 上游更新复验
 
-后续发布轮次的 `ent-1-model.rc` 就绪后，重新读取两层公共交付，保持同一题面和验收
-场景，适配批准更新并重新验证；更新 feedback 与 notes，不推测上游私有实现。每项
-任务完成后必须执行对应的 `oc-task mark-done`。
+后续发布轮次的 `ent-1-model.a3` 就绪后，重新读取两层公共交付，保持同一题面和验收
+场景，适配批准更新并重新验证；更新 feedback 与 notes，不推测上游私有实现。完成后
+提交对应的 `.a3` artifact。

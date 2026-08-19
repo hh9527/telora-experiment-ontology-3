@@ -18,9 +18,9 @@ ontology 概念或企业领域事实。本轮只实现 SQLite，不扩展其他 
 
 动态输入：
 
-- `control/nodes/qb-feedback-a2.feedback` 与 `control/nodes/qb-feedback-a3.feedback`：Host
-  从消费者原始审查中筛选并发布的反馈。首次实现时可以不存在；任一文件更新后，
-  `oc-task` 会重新返回 `qb.rc`。
+- `qb-feedback-a2` 与 `qb-feedback-a3` artifact：Host 从消费者原始审查中筛选并发布的
+  反馈。首次实现时可以不存在；任一 artifact 更新后，`oc-task pull a1` 会重新返回
+  `qb.a1`。
 
 不在清单中的文件不是 A1 输入。任务就绪与重跑由 `oc-task` 根据文件时间戳确定。
 
@@ -52,7 +52,7 @@ ontology 概念或企业领域事实。本轮只实现 SQLite，不扩展其他 
 
 ## 反馈修订
 
-`qb.rc` 首次运行时发布并验证可执行候选。Host feedback 出现后，同一任务
+`qb.a1` 首次运行时发布并验证可执行候选。Host feedback 出现后，同一任务
 重新就绪；完整读取已发布反馈，修订实现、教程和契约并重跑全部验证。不得直接读取
-消费者原始审查、企业或 ontology 的私有输入与源码。完成后必须执行对应的
-`oc-task mark-done`，发布新的 `qb.rc`。
+企业或 ontology 的其他私有输入与源码。完成后执行
+`oc-task submit a1 qb.a1`。

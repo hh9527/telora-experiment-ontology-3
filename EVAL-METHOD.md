@@ -27,18 +27,20 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
   A3 私有源码或 A1/A2 文件。依赖清单中的传递 package 不构成可见输入。
 - coordinator 只启动 A1-A4 各一个原生 child session，不补写任务定义或观察交付状态。
 - `ent-1/FEEDBACK.md` 初始必须为零字节；角色只在 `oc-task` 返回对应任务后读取动态输入。
-- 核对 `.oc-task` 的 claim/done 证据与实际交付顺序一致；coordinator 不创建 marker。
-- Agent 只通过 `mark-done <role> <name.rc>` 控制自己的 `.rc`；Host 只控制
-  `.feedback` 和 `.ready`。
-- review 独立执行时直接领取 `qb-review-<role>.rc`；review 与 build 同时 runnable 时，
-  build 必须吸收 review，先发布 review `.rc` 并保持父 claim，再发布 build `.rc`。
-- 核对每个 `.ready` 都晚于对应 `.rc` 和必要评审，且下游首次输出发生在 `.ready` 之后。
-- Host 发布的新反馈必须使旧 `.rc` 失效；上游重新执行后旧 `.ready` 必须失效并重新
+- 核对 `control/artifacts` marker 与实际交付顺序一致；coordinator 不创建 marker。
+- Agent 只通过 `submit <role> <artifact...>` 控制自己的 `.<role>` artifact；Host 只通过
+  `oc-ctl publish` 控制无角色后缀 artifact。
+- review 与 build 同时 runnable 时可以在同一次 pull 中返回并分别提交，不需要 claim 或
+  absorb 语义。
+- 核对每个 Host promotion 都晚于对应角色候选和必要评审，且下游首次输出发生在
+  promotion 之后。
+- Host 发布的新反馈必须使旧候选失效；上游重新执行后旧 promotion 必须失效并重新
   人工审核。不得以文件存在或自动验证成功替代人工放行。
-- `ent-1-model.ready` 必须早于公共 facade 首次写入；`ent-1-query-surface.ready` 必须
+- `ent-1-model` 必须早于公共 facade 首次写入；`ent-1-query-surface` 必须
   早于 A4 首次 Request 写入。A3 公共面不得包含物理名词或隐藏 intent 答案。
 - A4 首轮若仍有无需语言变化的明确改进空间，Host 可筛选并发布至多一次
-  `ent-1-query-feedback-a4.feedback`；确认它依次使旧 surface 与 intent 失效并重验。
+  `edsl-feedback` 或 `ent-1-query-feedback-a4`；确认它只使对应旧交付
+  及其下游失效，并由原角色修订重验。
 
 核对 ACP 事件与归档，确认语言学习并行、A2/A3 的 QueryBuilder 学习并行，且角色
 没有提前读取动态输入或通过 glob/grep/命令输出越过边界。
@@ -52,8 +54,8 @@ sort、limit、绑定顺序和重复转换。
 
 QueryBuilder 发布候选后，由 A2 根据 DESIGN、A3 根据 DOMAIN 审查。该审查可以独立
 执行，也可以由同角色已放行的 build 吸收。Host 决定哪些
-意见属于 A1 可处理范围，并通过 `.feedback` 发布；语言机制问题不得强塞给 A1。只有
-Host 发布 `qb.ready` 后，公共契约才可供下游实现使用。
+意见属于 A1 可处理范围，并通过反馈 artifact 发布；语言机制问题不得强塞给 A1。只有
+Host 发布 `qb` 后，公共契约才可供下游实现使用。
 
 ## A2 评估
 
@@ -89,7 +91,7 @@ Host 同时读取私有 DOMAIN 与 INTENT，检查 A4 的 typed Request 是否�
 才发布批准反馈；语言机制问题仍转为独立 issue。若 Host 在 idle 边界发布新版
 binary/教程，必须记录原子发布证据，并把角色变化归属于 runtime epoch，而非自身修正。
 
-反馈按目标 `.rc` 分区。记录每次 `.feedback`、修订 `.rc` 和重新放行 `.ready` 的时间戳。
+反馈按目标候选分区。记录每次反馈、修订候选和重新发布 Host promotion 的时间戳。
 
 ## 归因
 
