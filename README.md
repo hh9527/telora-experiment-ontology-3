@@ -86,17 +86,22 @@ feedback 状态。
 ## 运行
 
 ```bash
-./oc-run ontology-3 t001 --port 4196
-./oc-ctl start t001
+./oc-run t001
+```
+
+外部窗口只提供 test-id，并等待 Host 配置。Host 自主选择本计划，在本目录中执行：
+
+```bash
+../../oc-ctl start t001
 ```
 
 使用以下命令观察和干预：
 
 ```bash
-./oc-ctl status t001
-./oc-ctl stat t001
-./oc-ctl update t001 path/in/workspace=path/in/current/directory
-./oc-ctl publish t001 artifact
+../../oc-ctl status t001
+../../oc-ctl stat t001
+../../oc-ctl update t001 path/in/workspace=path/in/current/directory
+../../oc-ctl publish t001 artifact
 ```
 
 准备阶段构建并复制 release Telora binary。coordinator 与 A1-A4 均固定使用
