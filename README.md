@@ -32,6 +32,11 @@ A4 intent-1: private text intent -> typed Request -> public lower -> Query
 检查项和 freshness 均由 DAG 引擎检查。每个角色永远循环 pull；无工作或 60 秒超时后
 立即继续，任务完成后把该次 pull 返回的完整 artifact 集合一次 submit。
 
+`pull` 对每个输出分别列出 `output_mtime_ns`，并为每个直接输入列出 `mtime_ns` 和
+`changed`。`changed` 等价于 `input.mtime_ns > output_mtime_ns`，不需要保存历史状态。
+角色必须重新读取所有 `changed: true` 的输入并据此检视、更新和验证当前输出，不能因为
+checks 中的旧文件仍然存在而直接 submit。
+
 ## Artifact DAG
 
 ```text
