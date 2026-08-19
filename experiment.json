@@ -12,27 +12,33 @@
       "./bin/oc-task pull a1",
       "./bin/oc-task submit a1 *",
       "./bin/telora run main -C query-builder",
+      "./bin/telora run verify -C query-builder",
       "./bin/telora run invalid -C query-builder --best-effort",
       "./bin/telora check @test/query-builder.telora -C query-builder",
-      "./bin/telora show @bin/main.telora -C query-builder"
+      "./bin/telora show @bin/main.telora -C query-builder",
+      "./bin/telora types --limit 20"
     ],
     "a2": [
       "./bin/oc-task pull a2",
       "./bin/oc-task submit a2 *",
       "./bin/telora run main -C ontology",
+      "./bin/telora run verify -C ontology",
       "./bin/telora run invalid -C ontology --best-effort",
       "./bin/telora check @test/ontology.telora -C ontology",
-      "./bin/telora show @bin/main.telora -C ontology"
+      "./bin/telora show @bin/main.telora -C ontology",
+      "./bin/telora types --limit 20"
     ],
     "a3": [
       "./bin/oc-task pull a3",
       "./bin/oc-task submit a3 *",
       "./bin/telora run main -C ent-1",
+      "./bin/telora run verify -C ent-1",
       "./bin/telora run query-surface -C ent-1",
       "./bin/telora run invalid -C ent-1 --best-effort",
       "./bin/telora check @test/logistics.telora -C ent-1",
       "./bin/telora check @test/query-surface.telora -C ent-1",
-      "./bin/telora show @bin/main.telora -C ent-1"
+      "./bin/telora show @bin/main.telora -C ent-1",
+      "./bin/telora types --limit 20"
     ],
     "a4": [
       "./bin/oc-task pull a4",
@@ -42,7 +48,8 @@
       "./bin/telora run invalid -C intent-1",
       "./bin/telora run invalid -C intent-1 --best-effort",
       "./bin/telora check @test/intent.telora -C intent-1",
-      "./bin/telora show @bin/main.telora -C intent-1"
+      "./bin/telora show @bin/main.telora -C intent-1",
+      "./bin/telora types --limit 20"
     ]
   },
   "metrics": {
@@ -99,7 +106,7 @@
             "tests": ["ent-1/tests/*.telora"]
           },
           "documents": {
-            "private_docs": ["ent-1/FEEDBACK.md", "ent-1/NOTES.md"],
+            "private_docs": ["ent-1/UPSTREAM-FEEDBACK.md", "ent-1/NOTES.md"],
             "public_docs": ["ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md"]
           }
         }
@@ -149,28 +156,27 @@
       "domain-ent-1": {"desc": "Ent-1 企业领域知识和数据模型", "checks": ["ent-1/GOAL.md", "ent-1/DOMAIN.md", "ent-1/telora-deps.json"]},
       "intent-req": {"desc": "A4 私有文字查询意图", "checks": ["intent-1/GOAL.md", "intent-1/INTENT.md", "intent-1/telora-deps.json"]},
 
-      "qb-feedback-a2": {"desc": "Host 批准的 A2 QueryBuilder 反馈", "checks": ["ontology/QUERY-BUILDER-FEEDBACK.md"]},
-      "qb-feedback-a3": {"desc": "Host 批准的 A3 QueryBuilder 反馈", "checks": ["ent-1/QUERY-BUILDER-FEEDBACK.md"]},
+      "qb-feedback": {"desc": "Host 整合的 QueryBuilder 反馈", "checks": ["query-builder/FEEDBACK.md"]},
       "qb.a1": {
         "desc": "QueryBuilder 设计与实现（A1 送审版）",
-        "input": ["lang", "qb-req", "qb-feedback-a2?", "qb-feedback-a3?"],
+        "input": ["lang", "qb-req", "qb-feedback?"],
         "checks": ["query-builder/src/**/*.telora", "query-builder/src/bin/main.telora", "query-builder/src/bin/verify.telora", "query-builder/src/bin/invalid.telora", "query-builder/tests/query-builder.telora", "query-builder/QUERY-BUILDER-TUTORIAL.md", "query-builder/PUBLIC-CONTRACT.md", "query-builder/NOTES.md"],
-        "instruction": "完整学习 Telora，依据 query-builder/GOAL.md 与 DESIGN.md 实现并验证 QueryBuilder。若已发布 qb-feedback-a2 或 qb-feedback-a3，完整读取对应反馈文件、修订并重验，然后提交 qb.a1。"
+        "instruction": "完整学习 Telora，依据 query-builder/GOAL.md 与 DESIGN.md 实现并验证 QueryBuilder。若已发布 qb-feedback，完整读取 query-builder/FEEDBACK.md、修订并重验，然后提交 qb.a1。"
       },
       "lang-learn.a2": {"desc": "A2 语言学习", "input": ["lang", "edsl-req"], "instruction": "完整学习 Telora 教程、CLI 和 eDSL 设计需求；可探索语言，但不读取 QueryBuilder 交付、不开始 eDSL 实现，然后提交 lang-learn.a2。"},
       "lang-learn.a3": {"desc": "A3 语言学习", "input": ["lang", "domain-ent-1"], "instruction": "完整学习 Telora 教程、CLI 和 Ent-1 领域知识；可探索语言，但不读取上游交付、不开始建模，然后提交 lang-learn.a3。"},
       "lang-learn.a4": {"desc": "A4 语言学习", "input": ["lang", "intent-req"], "instruction": "完整学习 Telora 教程、CLI 和私有文字意图；不读取尚未放行的公共查询面、不开始构造 Request，然后提交 lang-learn.a4。"},
-      "qb-review.a2": {
+      "qb-feedback.a2": {
         "desc": "A2 对 QueryBuilder 的检视意见",
         "input": ["qb.a1", "lang-learn.a2"],
         "checks": ["ontology/QUERY-BUILDER-FEEDBACK.md"],
-        "instruction": "阅读 QueryBuilder 公共草案，依据 ontology/DESIGN.md 检视 Plan 算子和 profile 能力，更新 ontology/QUERY-BUILDER-FEEDBACK.md，然后提交 qb-review.a2。"
+        "instruction": "阅读 QueryBuilder 公共草案，依据 ontology/DESIGN.md 检视 Plan 算子和 profile 能力，更新 ontology/QUERY-BUILDER-FEEDBACK.md，然后提交 qb-feedback.a2。"
       },
-      "qb-review.a3": {
+      "qb-feedback.a3": {
         "desc": "A3 对 QueryBuilder 的检视意见",
         "input": ["qb.a1", "lang-learn.a3"],
         "checks": ["ent-1/QUERY-BUILDER-FEEDBACK.md"],
-        "instruction": "阅读 QueryBuilder 公共草案，依据 ent-1/DOMAIN.md 检视真实领域所需算子和 Plan 形状，更新 ent-1/QUERY-BUILDER-FEEDBACK.md，然后提交 qb-review.a3。"
+        "instruction": "阅读 QueryBuilder 公共草案，依据 ent-1/DOMAIN.md 检视真实领域所需算子和 Plan 形状，更新 ent-1/QUERY-BUILDER-FEEDBACK.md，然后提交 qb-feedback.a3。"
       },
       "qb": {"desc": "Host 批准的 QueryBuilder", "input": ["qb.a1"]},
 
@@ -181,23 +187,37 @@
         "checks": ["ontology/src/**/*.telora", "ontology/src/bin/main.telora", "ontology/src/bin/verify.telora", "ontology/src/bin/invalid.telora", "ontology/tests/ontology.telora", "ontology/DSL-TUTORIAL.md", "ontology/PUBLIC-CONTRACT.md", "ontology/NOTES.md"],
         "instruction": "学习批准后的 QueryBuilder 公共交付，依据 ontology/GOAL.md 与 DESIGN.md 实现并验证 EnterpriseKnowledge eDSL。若 edsl-feedback 已发布，完整读取 ontology/FEEDBACK.md、修订并重验，然后提交 edsl.a2。"
       },
+      "edsl-feedback.a3": {
+        "desc": "A3 对 eDSL 送审版的检视意见",
+        "input": ["edsl.a2", "lang-learn.a3"],
+        "checks": ["ent-1/EDSL-FEEDBACK.md"],
+        "instruction": "依据 Ent-1 领域需要检视 eDSL 送审版，更新 ent-1/EDSL-FEEDBACK.md，然后提交 edsl-feedback.a3。"
+      },
       "edsl": {"desc": "Host 批准的 eDSL", "input": ["edsl.a2"]},
 
+      "ent-1-model-feedback": {"desc": "Host 对 Ent-1 私有模型的反馈", "checks": ["ent-1/FEEDBACK.md"]},
       "ent-1-model.a3": {
         "desc": "Ent-1 私有 EnterpriseKnowledge（A3 送审版）",
-        "input": ["lang-learn.a3", "domain-ent-1", "qb", "edsl"],
-        "checks": ["ent-1/src/model.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/FEEDBACK.md", "ent-1/NOTES.md"],
-        "instruction": "学习批准后的 QueryBuilder 和 eDSL 公共交付，依据 ent-1/GOAL.md 与 DOMAIN.md 建立并验证私有 EnterpriseKnowledge，更新 FEEDBACK.md 与 NOTES.md，然后提交 ent-1-model.a3。"
+        "input": ["lang-learn.a3", "domain-ent-1", "qb", "edsl", "ent-1-model-feedback?"],
+        "checks": ["ent-1/src/model.telora", "ent-1/src/bin/main.telora", "ent-1/src/bin/verify.telora", "ent-1/src/bin/invalid.telora", "ent-1/tests/logistics.telora", "ent-1/UPSTREAM-FEEDBACK.md", "ent-1/NOTES.md"],
+        "instruction": "学习批准后的 QueryBuilder 和 eDSL 公共交付，依据 ent-1/GOAL.md 与 DOMAIN.md 建立并验证私有 EnterpriseKnowledge，更新 UPSTREAM-FEEDBACK.md 与 NOTES.md。若 ent-1-model-feedback 已发布，完整读取 ent-1/FEEDBACK.md、修订并重验，然后提交 ent-1-model.a3。"
       },
       "ent-1-model": {"desc": "Host 批准的 Ent-1 私有模型", "input": ["ent-1-model.a3"]},
-      "ent-1-query-feedback-a4": {"desc": "Host 批准的 A4 公共查询面反馈", "checks": ["intent-1/FEEDBACK.md"]},
+      "ent-1-query-surface-feedback": {"desc": "Host 整合的公共查询面反馈", "checks": ["ent-1/QUERY-SURFACE-FEEDBACK.md"]},
       "ent-1-query-surface.a3": {
         "desc": "Ent-1 公共查询面（A3 送审版）",
-        "input": ["ent-1-model", "ent-1-query-feedback-a4?"],
+        "input": ["ent-1-model", "ent-1-query-surface-feedback?"],
         "checks": ["ent-1/src/query.telora", "ent-1/src/bin/query-surface.telora", "ent-1/tests/query-surface.telora", "ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md"],
-        "instruction": "从已批准的同一份私有 EnterpriseKnowledge 建立并验证公共查询 facade，不泄漏物理信息。若 ent-1-query-feedback-a4 已发布，读取 intent-1/FEEDBACK.md、修订并重验，然后提交 ent-1-query-surface.a3。"
+        "instruction": "从已批准的同一份私有 EnterpriseKnowledge 建立并验证公共查询 facade，不泄漏物理信息。若 ent-1-query-surface-feedback 已发布，读取 ent-1/QUERY-SURFACE-FEEDBACK.md、修订并重验，然后提交 ent-1-query-surface.a3。"
       },
       "ent-1-query-surface": {"desc": "Host 批准的 Ent-1 公共查询面", "input": ["ent-1-query-surface.a3"]},
+
+      "ent-1-query-surface-feedback.a4": {
+        "desc": "A4 对公共查询面送审版的检视意见",
+        "input": ["lang-learn.a4", "intent-req", "ent-1-query-surface.a3"],
+        "checks": ["intent-1/FEEDBACK.md"],
+        "instruction": "依据私有文字意图检视公共查询面，更新 intent-1/FEEDBACK.md，然后提交 ent-1-query-surface-feedback.a4。"
+      },
 
       "intent-1.a4": {
         "desc": "A4 typed Request 与查询结果（送审版）",

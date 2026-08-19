@@ -18,7 +18,7 @@ QueryBuilder 的公共交付，不得在 ontology 中另行定义。
 
 动态输入：
 
-- `oc-task` 返回 `qb-review.a2` 后读取 QueryBuilder 公共候选并完成能力
+- `oc-task` 返回 `qb-feedback.a2` 后读取 QueryBuilder 公共候选并完成能力
   审查，结果写入 `ontology/QUERY-BUILDER-FEEDBACK.md`；
 - `oc-task` 返回 `edsl.a2` 后读取 QueryBuilder 已放行的公共教程与契约并实现 eDSL；
 - `ontology/QUERY-BUILDER-FEEDBACK.md`：A2 对 QueryBuilder 公共草案的审查交付。
@@ -58,4 +58,4 @@ mapping。不得用最终 builder、预渲染 SQL、`Any`、`Dyn` 或 String 身
 ## 反馈修订
 
 `qb` 或 `edsl-feedback` 更新使 `edsl.a2` 重新就绪时，重新读取当前公共输入并验证既有
-eDSL。完成后执行 `oc-task submit a2 edsl.a2`。
+eDSL。完成后用一次 `oc-task submit a2 ...` 提交本次 pull 返回的完整 artifact 集合。

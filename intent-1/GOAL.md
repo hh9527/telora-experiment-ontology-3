@@ -17,6 +17,9 @@
 - Host 放行后：`ent-1/QUERY-DESIGNER-TUTORIAL.md` 与
   `ent-1/PUBLIC-QUERY-CONTRACT.md`
 
+`oc-task` 返回 `ent-1-query-surface-feedback.a4` 时，先依据私有文字意图检视公共查询面，
+并把原始意见写入 `intent-1/FEEDBACK.md`；Host 整合并放行公共查询面后才开始最终 Request。
+
 不得读取企业私有 DOMAIN、A3 私有模型源码、QueryBuilder/ontology 的文档或源码。
 不得通过错误消息、`show` 或其他工具反向恢复表、列、alias、join mapping 或 SQL 模板。
 
@@ -45,4 +48,5 @@ SQL renderer 或诊断容器。A4 不负责解析任意自然语言，只处理�
 ```
 
 非法入口的两个 `run` 应失败；普通模式应给出最直接的原因，`--best-effort` 可用于获取
-更多诊断，但两种模式必须同属失败。完成后执行 `oc-task submit a4 intent-1.a4`。
+更多诊断，但两种模式必须同属失败。完成后用一次 `oc-task submit a4 ...` 提交本次 pull
+返回的完整 artifact 集合。

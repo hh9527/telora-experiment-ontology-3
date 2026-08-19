@@ -9,5 +9,5 @@ permission: {"read":"deny","glob":"deny","grep":"deny","list":"deny","edit":"den
 
 `按照你的角色协议启动 oc-task 任务循环。`
 
-此后等待。不得观察文件、判断流程、恢复角色、创建 artifact 或发送额外任务。所有角色
-通过阻塞式 `oc-task pull` 被 artifact mtime 自动唤醒。
+四个启动调用完成后立即结束。不得观察文件、判断流程、恢复角色、创建 artifact 或发送
+额外任务。所有角色通过阻塞式 `oc-task pull` 被 artifact mtime 自动唤醒。

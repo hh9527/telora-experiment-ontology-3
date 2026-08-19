@@ -19,14 +19,16 @@ EnterpriseKnowledge + Request -> Plan -> Query
 - `ent-1/GOAL.md`
 - `ent-1/DOMAIN.md`
 - `ent-1/telora-deps.json`
-- `ent-1/FEEDBACK.md`：首次为空，首次建模后由 A3 写入；Host 可以在后续发布轮次
-  前将它整理为批准反馈；
+- `ent-1/FEEDBACK.md`：Host 所有的私有模型反馈；仅在
+  `ent-1-model-feedback` 发布后作为输入读取，A3 不得修改；
 - A3 自己已经产生的 `ent-1/src/**` 与 `ent-1/tests/**`
 
 动态输入由 `oc-task` 按任务依赖开放：
 
-- `qb-review.a3`：读取 QueryBuilder 公共候选，依据 DOMAIN 完成能力审查并
+- `qb-feedback.a3`：读取 QueryBuilder 公共候选，依据 DOMAIN 完成能力审查并
   写入 `ent-1/QUERY-BUILDER-FEEDBACK.md`，但不开始最终建模；
+- `edsl-feedback.a3`：读取 eDSL 公共候选，依据 DOMAIN 完成能力审查并写入
+  `ent-1/EDSL-FEEDBACK.md`；
 - `ent-1-model.a3`：在 `qb` 与 `edsl` 均发布后，读取 QueryBuilder 和
   ontology 公共教程与契约并开始最终建模。
 
@@ -42,8 +44,9 @@ EnterpriseKnowledge + Request -> Plan -> Query
 - `ent-1/src/bin/verify.telora`：验证 Plan 覆盖、profile 约束和 Query 确定性；
 - `ent-1/src/bin/invalid.telora`：非法场景产生 Host 诊断且无 Plan/Query；
 - `ent-1/tests/logistics.telora`：公共契约检查；
-- `ent-1/FEEDBACK.md`：按 QueryBuilder/eDSL 分区记录具体使用摩擦；
+- `ent-1/UPSTREAM-FEEDBACK.md`：按 QueryBuilder/eDSL 分区记录具体使用摩擦；
 - `ent-1/QUERY-BUILDER-FEEDBACK.md`：最终建模前对 QueryBuilder 草案的能力审查；
+- `ent-1/EDSL-FEEDBACK.md`：最终建模前对 eDSL 草案的能力审查；
 - `ent-1/NOTES.md`：模型选择、验证结果和风险。
 
 ## 公共查询面交付物（`ent-1-query-surface.a3`）
@@ -82,9 +85,11 @@ query = query_builder.transform(plan)
 
 完成时报告真实结果与具体反馈，不要求 Git commit。
 
+Host 需要修订私有模型时，写入 `ent-1/FEEDBACK.md` 并发布
+`ent-1-model-feedback`；输入时间戳会使旧提交失效，A3 自动重新领取、修订和提交。
 Host 审核私有模型并发布 `ent-1-model` 后，`oc-task` 才会返回
-`ent-1-query-surface.a3`。完成公共 facade、教程和契约及其验证后，执行
-`oc-task submit a3 ent-1-query-surface.a3`。私有模型与公共查询面是两个独立 Host
+`ent-1-query-surface.a3`。完成公共 facade、教程和契约及其验证后，用一次
+`oc-task submit a3 ...` 提交本次 pull 返回的完整 artifact 集合。私有模型与公共查询面是两个独立 Host
 审核边界，但都由同一个 A3 session 和同一份 EnterpriseKnowledge 维护。
 
 公共面阶段至少实际运行：
