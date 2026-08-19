@@ -1,1 +1,402 @@
-# A1 replaces this contract probe with executable checks required by GOAL.md.
+# query-builder/tests/query-builder.telora
+#
+# 公共类型与模块契约检查：验证公共 API 的类型、纯验证能力、
+# profile 覆盖、确定性转换与失败分类。
+# 通过 ./bin/telora check @test/query-builder.telora -C query-builder 运行；
+# 任何失败都会使 check 非零退出。
+
+import "std/array" as array;
+import "std/string" as string;
+import "@src/query-builder.telora" {
+    Val,
+    DataSource,
+    ColumnRef,
+    JoinKind,
+    CompareOp,
+    ScalarFn,
+    AggregateFn,
+    OrderDirection,
+    ScalarCall,
+    CompareExpr,
+    AggregateCall,
+    Expr,
+    ProjectionItem,
+    Join,
+    OrderItem,
+    Plan,
+    Query,
+    PlanProfile,
+    OperatorSet,
+    operators,
+    profile_covers,
+    within_profile,
+    validate_plan,
+    transform_sqlite,
+    transform_sqlite_with_profile,
+};
+
+def expect: Fn(Bool, String) -> Bool = fn(condition, label) {
+    if condition {
+        'True
+    } else {
+        fail!(`contract check failed: \{label}`, condition)
+    }
+};
+
+# ---------------------------------------------------------------
+# 公共类型契约：这些声明存在且可引用。
+# ---------------------------------------------------------------
+let type_val: Val = 'String("x");
+let type_source: DataSource = {table: "t", alias: "a"};
+let type_column: ColumnRef = {alias: "a", column: "c"};
+let type_join_kind: JoinKind = 'Inner;
+let type_op: CompareOp = 'Eq;
+let type_scalar: ScalarFn = 'Substr;
+let type_agg: AggregateFn = 'Count;
+let type_order: OrderDirection = 'Asc;
+let type_scalar_call: ScalarCall = {kind: 'Lower, args: ['Column(type_column)]};
+let type_expr: Expr = 'Column(type_column);
+let type_item: ProjectionItem = {expr: type_expr, alias: "c"};
+let type_join: Join = {
+    kind: 'Inner,
+    source: {table: "t2", alias: "b"},
+    left: {alias: "a", column: "id"},
+    right: {alias: "b", column: "id"},
+};
+let type_order_item: OrderItem = {expr: type_expr, direction: 'Desc};
+let type_plan: Plan = {
+    revision: "v1",
+    source: {table: "t", alias: "a"},
+    projection: [type_item],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let type_query: Query = {sql: "SELECT 1", bindings: []};
+let type_profile: PlanProfile = {
+    allow_joins: ['Inner],
+    allow_scalar: ['Lower, 'Substr],
+    allow_aggregate: ['Count],
+    allow_filter: 'False,
+    allow_grouping: 'False,
+    allow_ordering: 'False,
+    allow_limit: 'False,
+};
+let type_operator_set: OperatorSet = {
+    joins: [],
+    scalars: [],
+    aggregates: [],
+    uses_filter: 'False,
+    uses_grouping: 'False,
+    uses_ordering: 'False,
+    uses_limit: 'False,
+};
+
+# ---------------------------------------------------------------
+# 合法 Plan 构造（含三参数 Substr 的 projection 与 grouping）。
+# ---------------------------------------------------------------
+let substr_expr: Expr = 'ScalarCall({
+    kind: 'Substr,
+    args: [
+        'Column({alias: "o", column: "created_at"}),
+        'Bound('Int(1)),
+        'Bound('Int(7)),
+    ],
+});
+
+let valid_plan: Plan = {
+    revision: "logistics-ontology-v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {expr: 'Column({alias: "o", column: "region"}), alias: "region"},
+        {expr: substr_expr, alias: "month"},
+        {
+            expr: 'ScalarCall({
+                kind: 'Round,
+                args: [
+                    'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+                    'Bound('Int(2)),
+                ],
+            }),
+            alias: "total",
+        },
+    ],
+    filter: [
+        'Compare({
+            op: 'Gt,
+            left: 'Column({alias: "o", column: "amount"}),
+            right: 'Bound('Int(500)),
+        }),
+    ],
+    joins: [
+        {
+            kind: 'Inner,
+            source: {table: "customers", alias: "c"},
+            left: {alias: "o", column: "customer_id"},
+            right: {alias: "c", column: "id"},
+        },
+    ],
+    grouping: [substr_expr],
+    ordering: [
+        {
+            expr: 'ScalarCall({
+                kind: 'Round,
+                args: [
+                    'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+                    'Bound('Int(2)),
+                ],
+            }),
+            direction: 'Desc,
+        },
+    ],
+    limit: 'Some(10),
+};
+
+# ---------------------------------------------------------------
+# 结构验证与 revision 保留。
+# ---------------------------------------------------------------
+let check_revision = expect(valid_plan.revision == "logistics-ontology-v1", "plan revision is a stable readable string label");
+let check_validate_ok = match validate_plan(valid_plan) {
+    'Ok(_) => 'True,
+    'Err(message) => fail!(`validate_plan rejected a valid plan: \{message}`, valid_plan),
+};
+
+let undefined_alias: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "nope", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let check_undefined_alias = match validate_plan(undefined_alias) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted undefined alias", undefined_alias),
+};
+
+let bad_table: Plan = {
+    revision: "v1",
+    source: {table: "bad table", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let check_bad_table = match validate_plan(bad_table) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted invalid table identifier", bad_table),
+};
+
+let bad_grouping_bound: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: ['Bound('Int(1))],
+    ordering: [],
+    limit: 'None,
+};
+let check_bad_grouping_bound = match validate_plan(bad_grouping_bound) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted bound value in grouping", bad_grouping_bound),
+};
+
+let bad_arity: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {
+            expr: 'ScalarCall({kind: 'Round, args: ['Column({alias: "o", column: "x"}), 'Column({alias: "o", column: "y"}), 'Column({alias: "o", column: "z"})]}),
+            alias: "r",
+        },
+    ],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let check_bad_arity = match validate_plan(bad_arity) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted invalid scalar arity", bad_arity),
+};
+
+# Substr arity：必须 2 或 3 个参数。
+let bad_substr_arity_1: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {
+            expr: 'ScalarCall({kind: 'Substr, args: ['Column({alias: "o", column: "created_at"})]}),
+            alias: "m",
+        },
+    ],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let check_bad_substr_arity_1 = match validate_plan(bad_substr_arity_1) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted substr with 1 argument", bad_substr_arity_1),
+};
+
+let bad_substr_arity_4: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {
+            expr: 'ScalarCall({
+                kind: 'Substr,
+                args: [
+                    'Column({alias: "o", column: "created_at"}),
+                    'Bound('Int(1)),
+                    'Bound('Int(7)),
+                    'Bound('Int(2)),
+                ],
+            }),
+            alias: "m",
+        },
+    ],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let check_bad_substr_arity_4 = match validate_plan(bad_substr_arity_4) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted substr with 4 arguments", bad_substr_arity_4),
+};
+
+let bad_limit: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'Some(-1),
+};
+let check_bad_limit = match validate_plan(bad_limit) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted negative limit", bad_limit),
+};
+
+let bad_join_side: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [
+        {
+            kind: 'Left,
+            source: {table: "customers", alias: "c"},
+            left: {alias: "o", column: "customer_id"},
+            right: {alias: "o", column: "id"},
+        },
+    ],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let check_bad_join_side = match validate_plan(bad_join_side) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("validate_plan accepted join with wrong right side", bad_join_side),
+};
+
+# ---------------------------------------------------------------
+# operators 与 profile 覆盖。
+# ---------------------------------------------------------------
+let ops: OperatorSet = operators(valid_plan);
+let expected_joins: Array(JoinKind) = ['Inner];
+let expected_aggregates: Array(AggregateFn) = ['Sum];
+let expected_scalars: Array(ScalarFn) = ['Substr, 'Round];
+let check_ops_joins = expect(ops.joins == expected_joins, "operators collects join kinds");
+let check_ops_aggregates = expect(ops.aggregates == expected_aggregates, "operators collects aggregate functions");
+let check_ops_scalars = expect(ops.scalars == expected_scalars, "operators collects scalar functions in first-use order");
+let check_ops_flags = expect(ops.uses_filter && ops.uses_grouping && ops.uses_ordering && ops.uses_limit, "operators collects feature flags");
+
+let permissive: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+let restrictive_join: PlanProfile = {
+    allow_joins: [],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+let restrictive_scalar: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+let no_substr: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+let check_profile_permissive = expect(within_profile(valid_plan, permissive), "permissive profile covers plan");
+let check_profile_join = expect(!within_profile(valid_plan, restrictive_join), "restrictive join profile rejects plan");
+let check_profile_scalar = expect(!within_profile(valid_plan, restrictive_scalar), "restrictive scalar profile rejects plan");
+let check_profile_substr = expect(!within_profile(valid_plan, no_substr), "no-substr profile rejects plan");
+let check_profile_covers = expect(profile_covers(ops, permissive), "profile_covers true for permissive");
+let check_profile_covers_reject = expect(!profile_covers(ops, restrictive_join), "profile_covers false for restrictive");
+
+# ---------------------------------------------------------------
+# 确定性转换与 SQL 形状。
+# ---------------------------------------------------------------
+let query: Query = transform_sqlite(valid_plan);
+let query_again: Query = transform_sqlite(valid_plan);
+let check_sql_equal = expect(query.sql == query_again.sql, "sql byte-identical");
+let check_bindings_equal = expect(query.bindings == query_again.bindings, "bindings identical");
+let check_with_profile = expect(transform_sqlite_with_profile(valid_plan, permissive).sql == query.sql, "profile path identical sql");
+
+let expected_sql = `SELECT "o"."region" AS "region", substr("o"."created_at", ?, ?) AS "month", round(SUM("o"."amount"), ?) AS "total" FROM "orders" AS "o" JOIN "customers" AS "c" ON "o"."customer_id" = "c"."id" WHERE ("o"."amount" > ?) GROUP BY substr("o"."created_at", ?, ?) ORDER BY round(SUM("o"."amount"), ?) DESC LIMIT ?`;
+let check_sql_shape = expect(query.sql == expected_sql, "sql matches canonical shape");
+let check_sql_contains_substr = expect(string.contains(query.sql, "substr(\"o\".\"created_at\", ?, ?)"), "sql contains substr with placeholders");
+
+let placeholder_count = array.length(string.split(query.sql, "?")) - 1;
+let check_bindings_count = expect(array.length(query.bindings) == placeholder_count, "bindings count equals placeholder count");
+let check_placeholders = expect(string.contains(query.sql, "?"), "sql uses placeholders");
+let check_no_literal_escape = expect(!string.contains(query.sql, "500"), "runtime value is not spliced into sql");
+
+let expected_bindings: Array(Val) = ['Int(1), 'Int(7), 'Int(2), 'Int(500), 'Int(1), 'Int(7), 'Int(2), 'Int(10)];
+let check_bindings_order = expect(query.bindings == expected_bindings, "bindings in canonical order");
+
+# ---------------------------------------------------------------
+# 失败分类：纯检查先行，transform 使用 fail!。
+# ---------------------------------------------------------------
+let check_profile_precheck = expect(!within_profile(valid_plan, restrictive_join), "profile failure detectable via within_profile");
+let check_structure_precheck = match validate_plan(undefined_alias) {
+    'Err(_) => 'True,
+    'Ok(_) => fail!("structure failure detectable via validate_plan", undefined_alias),
+};
+
+export let output: String = "query-builder.telora: contract checks passed";

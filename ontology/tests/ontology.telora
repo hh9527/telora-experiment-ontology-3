@@ -1,1 +1,86 @@
-export let output = "add focused ontology validation";
+# ontology/tests/ontology.telora
+# Public type and module contract checks for the EnterpriseKnowledge eDSL.
+# check @test/ontology.telora -C ontology must end with status ok.
+
+import "std/array" as array;
+import "@src/fixtures.telora" {
+    knowledge, knowledge_bad_expr, profile_permissive, profile_no_substr,
+    request_order, request_item, request_package, request_units,
+};
+import "@src/ontology.telora" {
+    make_query_creator,
+};
+import "query-builder/query-builder.telora" {
+    Plan, PlanProfile, Query, validate_plan, within_profile, transform_sqlite,
+};
+
+let creator = make_query_creator(knowledge);
+let plan_order: Plan = creator(request_order);
+let plan_item: Plan = creator(request_item);
+let plan_package: Plan = creator(request_package);
+let plan_units: Plan = creator(request_units);
+let query_order: Query = transform_sqlite(plan_order);
+
+# --- positive contract checks ---
+let coverage_ok: Bool =
+    array.length(plan_order.projection) == 3
+    && array.length(plan_item.projection) == 2
+    && array.length(plan_package.projection) == 1
+    && array.length(plan_units.projection) == 1
+    && plan_order.revision == "retail-catalog-v8";
+let joins_ok: Bool =
+    array.length(plan_order.joins) == 1
+    && array.length(plan_item.joins) == 1
+    && array.length(plan_package.joins) == 1
+    && array.length(plan_units.joins) == 2;
+let grouping_ok: Bool =
+    array.length(plan_order.grouping) == 2
+    && array.length(plan_item.grouping) == 1;
+let profile_ok: Bool = within_profile(plan_order, knowledge.plan_profile);
+let structure_ok: Bool = match validate_plan(plan_order) {
+    'Ok(_) => 'True,
+    'Err(_) => 'False,
+};
+let transform_ok: Bool = array.length(query_order.bindings) == 4;
+let bases_ok: Bool = plan_order.source.table == "orders"
+    && plan_item.source.table == "package_items"
+    && plan_package.source.table == "packages";
+
+# --- required-entity lowering checks ---
+# Package grain: DeliveredPackages requires Order -> Package -> Order join present.
+let required_package_ok: Bool =
+    plan_package.joins[0].source.table == "orders"
+    && plan_package.joins[0].left.alias == "e0"
+    && plan_package.joins[0].right.alias == "e1";
+# PackageItem grain: UnitsShipped requires Package then Order ->
+# PackageItem -> Package -> Order joins in order.
+let required_units_ok: Bool =
+    plan_units.joins[0].source.table == "packages"
+    && plan_units.joins[1].source.table == "orders"
+    && plan_units.joins[1].left.alias == "e1"
+    && plan_units.joins[1].right.alias == "e2";
+
+# --- pure failure assertions (no fail! required) ---
+# 1. a plan using Substr is NOT covered by a profile that disallows Substr
+let profile_substr_rejected: Bool = within_profile(plan_order, profile_no_substr) == 'False;
+# 2. a profile that allows Substr covers the same plan
+let profile_substr_allowed: Bool = within_profile(plan_order, profile_permissive) == 'True;
+# 3. the grains resolve to different base data sources
+let bases_differ: Bool = plan_order.source.table != plan_item.source.table
+    && plan_item.source.table != plan_package.source.table;
+
+let contract_ok: Bool = coverage_ok && joins_ok && grouping_ok && profile_ok
+    && structure_ok && transform_ok && bases_ok
+    && required_package_ok && required_units_ok
+    && profile_substr_rejected && profile_substr_allowed && bases_differ;
+let _check = if contract_ok {
+    'True
+} else {
+    fail!("ontology contract check failed", contract_ok)
+};
+
+export let plan_order_export: Plan = plan_order;
+export let plan_units_export: Plan = plan_units;
+export let output: String = `ontology contract checks ok bases=\{plan_order.source.table},\{plan_package.source.table},\{plan_item.source.table} required=\{
+    if required_package_ok && required_units_ok { "ok" } else { "bad" }
+} profile_substr_rejected=\{profile_substr_rejected} sql=\{query_order.sql}`;

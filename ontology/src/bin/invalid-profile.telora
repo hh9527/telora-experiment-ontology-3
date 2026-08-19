@@ -1,0 +1,15 @@
+# ontology/src/bin/invalid-profile.telora
+# A plan that uses a scalar the knowledge.plan_profile does not allow must fail
+# atomically. knowledge_no_substr disallows 'Substr, while request_order includes
+# the derived order_month dimension (substr(created_at, 1, 7)). Run with
+# --best-effort to surface the diagnostics.
+
+import "@src/fixtures.telora" { knowledge_no_substr, request_order };
+import "@src/ontology.telora" { make_query_creator };
+import "query-builder/query-builder.telora" { Plan };
+
+let creator = make_query_creator(knowledge_no_substr);
+let plan: Plan = creator(request_order);
+
+# Reaching this line would mean a profile violation still produced a trusted Plan.
+export let output: String = `unexpected success: published plan revision \{plan.revision}`;

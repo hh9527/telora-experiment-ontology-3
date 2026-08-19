@@ -1,0 +1,27 @@
+# Ent-1 非法入口（独立）：OrdersCreated 按 ProductCategory 分组
+#
+# 单独验证 ProductCategory 从 Order grain 因 fan-out-only 失败
+# （enterprise-knowledge.unsafe-path），不依赖缺失能力的 DeliveryException。
+#
+# 期望：run invalid-product-category --best-effort 非零退出、Host 诊断，
+# 且不产生任何 Output(String) effect（无 plan/query）。
+
+import "@src/model.telora" {
+    knowledge, MeasureId, DimensionId, Subject, GrainId,
+};
+import "ontology/ontology.telora" { QueryRequest, make_query_creator };
+import "query-builder/query-builder.telora" { Plan };
+
+let request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'ProductCategory, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+let creator = make_query_creator(knowledge);
+let plan: Plan = creator(request);
+
+export let output = "invalid product-category request unexpectedly produced a plan";

@@ -1,1 +1,82 @@
-export let output = "validate rejected enterprise intent";
+# Ent-1 公共契约检查（开发期分析入口）
+#
+# 断言 eDSL + QueryBuilder 公共契约在物流领域实例上成立：
+# - EnterpriseKnowledge 可构造 creator；
+# - Order grain 合法请求产生覆盖完整请求的规范 Plan；
+# - Package grain（DeliveredPackages）与 PackageItem grain（UnitsShipped）
+#   经 requires 得到正确 base 与 join 路径；
+# - Plan 通过 profile 校验，SQLite transform 确定且逐字节一致。
+#
+# 用法：./bin/telora check @test/logistics.telora -C ent-1
+
+import "@src/model.telora" {
+    knowledge, plan_profile, logistics_ontology_revision,
+    MeasureId, DimensionId, Subject, GrainId,
+};
+import "ontology/ontology.telora" { QueryRequest, make_query_creator };
+import "query-builder/query-builder.telora" {
+    Plan, Query, transform_sqlite, transform_sqlite_with_profile, within_profile,
+};
+import "std/array" as array;
+
+def require: Fn(Bool, String) -> Bool = fn(cond, label) {
+    if cond { 'True } else { fail!(`contract failed: \{label}`, cond) }
+};
+
+let legal_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: 'Analyst, input: 'Order},
+        {id: 'CustomerTier, subject: 'Analyst, input: 'Order},
+        {id: 'OriginRegion, subject: 'Analyst, input: 'Order},
+        {id: 'CarrierName, subject: 'Analyst, input: 'Order},
+        {id: 'ServiceName, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+let creator = make_query_creator(knowledge);
+let plan: Plan = creator(legal_request);
+let query: Query = transform_sqlite_with_profile(plan, plan_profile);
+
+# Order grain：1 指标 + 5 维度投影、5 项 grouping、5 个安全 join、无 filter/ordering/limit
+let c_proj = require(array.length(plan.projection) == 6, "projection covers measure + 5 dimensions");
+let c_group = require(array.length(plan.grouping) == 5, "grouping covers 5 dimensions");
+let c_joins = require(array.length(plan.joins) == 5, "five necessary joins");
+let c_filter = require(array.length(plan.filter) == 0, "no filter");
+let c_ordering = require(array.length(plan.ordering) == 0, "no ordering");
+let c_limit = require(plan.limit == 'None, "no limit");
+let c_source = require(plan.source.table == "orders", "base source is orders");
+let c_revision = require(plan.revision == logistics_ontology_revision, "plan revision label");
+
+# profile 与确定性
+let c_within = require(within_profile(plan, plan_profile) == 'True, "within_profile");
+let c_deterministic = require(transform_sqlite(plan) == transform_sqlite(plan), "transform_sqlite deterministic");
+let c_same = require(transform_sqlite_with_profile(plan, plan_profile) == query, "profile transform equals plain");
+
+# Package grain：DeliveredPackages（requires: ['Order]）
+let delivered_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [{id: 'DeliveredPackages, subject: 'Analyst, input: 'Package}],
+    dimensions: [],
+};
+let plan_delivered: Plan = creator(delivered_request);
+let c_del_source = require(plan_delivered.source.table == "packages", "delivered source packages");
+let c_del_revision = require(plan_delivered.revision == logistics_ontology_revision, "delivered revision");
+let c_del_proj = require(array.length(plan_delivered.projection) == 1, "delivered projection count");
+let c_del_joins = require(array.length(plan_delivered.joins) == 1, "delivered exactly one Package->Order join");
+let c_del_det = require(transform_sqlite(plan_delivered) == transform_sqlite(plan_delivered), "delivered deterministic");
+
+# PackageItem grain：UnitsShipped（requires: ['Package, 'Order]）
+let units_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [{id: 'UnitsShipped, subject: 'Analyst, input: 'PackageItem}],
+    dimensions: [],
+};
+let plan_units: Plan = creator(units_request);
+let c_units_source = require(plan_units.source.table == "package_items", "units source package_items");
+let c_units_revision = require(plan_units.revision == logistics_ontology_revision, "units revision");
+let c_units_proj = require(array.length(plan_units.projection) == 1, "units projection count");
+let c_units_joins = require(array.length(plan_units.joins) == 2, "units joins PackageItem->Package->Order");
+let c_units_det = require(transform_sqlite(plan_units) == transform_sqlite(plan_units), "units deterministic");
+
+export let output = `logistics contract ok: order joins=\{array.length(plan.joins)} projection=\{array.length(plan.projection)} grouping=\{array.length(plan.grouping)}; delivered joins=\{array.length(plan_delivered.joins)}; units joins=\{array.length(plan_units.joins)} sql=\{query.sql}`;

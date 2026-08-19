@@ -1,0 +1,14 @@
+# ontology/src/bin/invalid-attribute.telora
+# Knowledge whose physical expression references an attribute outside the
+# capability's entity scope must be rejected at make_query_creator construction.
+# knowledge_bad_expr gives the Revenue measure an expression over CustomerCountry
+# while the measure lives on Order. Run with --best-effort to surface the
+# diagnostics.
+
+import "@src/fixtures.telora" { knowledge_bad_expr };
+import "@src/ontology.telora" { make_query_creator };
+
+let creator = make_query_creator(knowledge_bad_expr);
+
+# Reaching this line would mean invalid knowledge still produced a creator.
+export let output: String = "unexpected success: creator constructed from invalid knowledge";

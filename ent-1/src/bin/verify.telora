@@ -1,0 +1,205 @@
+# Ent-1 验证入口：合法 Plan 覆盖、profile 约束与 Query 确定性
+#
+# 断言：
+# - Plan 完整保留请求投影（1 指标 + 5 维度）、grouping（5 项）、
+#   五个安全 join 及结构化等值 mapping；
+# - Plan 只使用 knowledge.plan_profile 接受的标准算子；
+# - SQLite transform 逐字节确定，bindings 顺序确定。
+
+import "@src/model.telora" {
+    knowledge, plan_profile, logistics_ontology_revision,
+    MeasureId, DimensionId, Subject, GrainId,
+};
+import "ontology/ontology.telora" { QueryRequest, make_query_creator };
+import "query-builder/query-builder.telora" {
+    Plan, Query, Expr, Join, JoinKind, ScalarFn, AggregateFn, Val, OperatorSet,
+    transform_sqlite, transform_sqlite_with_profile,
+    within_profile, profile_covers, operators,
+};
+import "std/array" as array;
+import "std/string" as string;
+
+def require: Fn(Bool, String) -> Bool = fn(cond, label) {
+    if cond { 'True } else { fail!(`verify failed: \{label}`, cond) }
+};
+
+def is_column: Fn(Expr, String, String) -> Bool = fn(expr, alias, column) {
+    match expr {
+        'Column(ref) => ref.alias == alias && ref.column == column,
+        _ => 'False,
+    }
+};
+
+def is_bound_int: Fn(Expr, Int) -> Bool = fn(expr, value) {
+    match expr {
+        'Bound('Int(v)) => v == value,
+        _ => 'False,
+    }
+};
+
+def is_order_month: Fn(Expr) -> Bool = fn(expr) {
+    match expr {
+        'ScalarCall(call) =>
+            call.kind == 'Substr &&
+            array.length(call.args) == 3 &&
+            is_column(call.args[0], "e0", "created_at") &&
+            is_bound_int(call.args[1], 1) &&
+            is_bound_int(call.args[2], 7),
+        _ => 'False,
+    }
+};
+
+def is_count_of: Fn(Expr, String, String) -> Bool = fn(expr, alias, column) {
+    match expr {
+        'Aggregate(agg) => agg.kind == 'Count && is_column(agg.arg, alias, column),
+        _ => 'False,
+    }
+};
+
+def is_join: Fn(Join, String, String, String, String, String, String) -> Bool =
+    fn(join, table, alias, left_alias, left_column, right_alias, right_column) {
+        join.kind == 'Inner &&
+        join.source.table == table &&
+        join.source.alias == alias &&
+        join.left.alias == left_alias &&
+        join.left.column == left_column &&
+        join.right.alias == right_alias &&
+        join.right.column == right_column
+    };
+
+let legal_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: 'Analyst, input: 'Order},
+        {id: 'CustomerTier, subject: 'Analyst, input: 'Order},
+        {id: 'OriginRegion, subject: 'Analyst, input: 'Order},
+        {id: 'CarrierName, subject: 'Analyst, input: 'Order},
+        {id: 'ServiceName, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+let creator = make_query_creator(knowledge);
+let plan: Plan = creator(legal_request);
+let query: Query = transform_sqlite_with_profile(plan, plan_profile);
+
+# --- Plan 覆盖 ---
+let c_revision = require(plan.revision == logistics_ontology_revision, "plan revision is logistics-ontology-v1");
+let c_source_table = require(plan.source.table == "orders", "source table orders");
+let c_source_alias = require(plan.source.alias == "e0", "source alias e0");
+
+let c_proj_count = require(array.length(plan.projection) == 6, "projection has 6 items");
+let c_proj0_alias = require(plan.projection[0].alias == "orders_created", "projection[0] alias");
+let c_proj0_expr = require(is_count_of(plan.projection[0].expr, "e0", "id"), "projection[0] is COUNT(orders.id)");
+let c_proj1_alias = require(plan.projection[1].alias == "order_month", "projection[1] alias");
+let c_proj1_expr = require(is_order_month(plan.projection[1].expr), "projection[1] is substr(created_at,1,7)");
+let c_proj2_alias = require(plan.projection[2].alias == "customer_tier", "projection[2] alias");
+let c_proj2_expr = require(is_column(plan.projection[2].expr, "e1", "tier"), "projection[2] is customers.tier");
+let c_proj3_alias = require(plan.projection[3].alias == "origin_region", "projection[3] alias");
+let c_proj3_expr = require(is_column(plan.projection[3].expr, "e3", "name"), "projection[3] is regions.name");
+let c_proj4_alias = require(plan.projection[4].alias == "carrier_name", "projection[4] alias");
+let c_proj4_expr = require(is_column(plan.projection[4].expr, "e4", "name"), "projection[4] is carriers.name");
+let c_proj5_alias = require(plan.projection[5].alias == "service_name", "projection[5] alias");
+let c_proj5_expr = require(is_column(plan.projection[5].expr, "e5", "name"), "projection[5] is service_levels.name");
+
+let c_group_count = require(array.length(plan.grouping) == 5, "grouping has 5 items");
+let c_group0 = require(is_order_month(plan.grouping[0]), "grouping[0] is substr month");
+let c_group1 = require(is_column(plan.grouping[1], "e1", "tier"), "grouping[1] is tier");
+let c_group2 = require(is_column(plan.grouping[2], "e3", "name"), "grouping[2] is region");
+let c_group3 = require(is_column(plan.grouping[3], "e4", "name"), "grouping[3] is carrier");
+let c_group4 = require(is_column(plan.grouping[4], "e5", "name"), "grouping[4] is service");
+
+let c_join_count = require(array.length(plan.joins) == 5, "five necessary joins");
+let c_join0 = require(is_join(plan.joins[0], "customers", "e1", "e0", "customer_id", "e1", "id"), "join Order->Customer");
+let c_join1 = require(is_join(plan.joins[1], "warehouses", "e2", "e0", "warehouse_id", "e2", "id"), "join Order->Warehouse");
+let c_join2 = require(is_join(plan.joins[2], "regions", "e3", "e2", "region_id", "e3", "id"), "join Warehouse->Region");
+let c_join3 = require(is_join(plan.joins[3], "carriers", "e4", "e0", "carrier_id", "e4", "id"), "join Order->Carrier");
+let c_join4 = require(is_join(plan.joins[4], "service_levels", "e5", "e0", "service_level_id", "e5", "id"), "join Order->ServiceLevel");
+
+let c_no_filter = require(array.length(plan.filter) == 0, "no filter");
+let c_no_ordering = require(array.length(plan.ordering) == 0, "no ordering");
+let c_no_limit = require(plan.limit == 'None, "no limit");
+
+# --- profile 约束 ---
+let c_within = require(within_profile(plan, plan_profile) == 'True, "within_profile");
+let ops: OperatorSet = operators(plan);
+let c_covers = require(profile_covers(ops, plan_profile) == 'True, "profile_covers");
+let expected_joins: Array(JoinKind) = ['Inner];
+let expected_scalars: Array(ScalarFn) = ['Substr];
+let expected_aggregates: Array(AggregateFn) = ['Count];
+let c_joins_kind = require(ops.joins == expected_joins, "only Inner joins");
+let c_scalars = require(ops.scalars == expected_scalars, "only Substr scalar");
+let c_aggregates = require(ops.aggregates == expected_aggregates, "only Count aggregate");
+let c_uses_grouping = require(ops.uses_grouping == 'True, "uses grouping");
+let c_uses_filter = require(ops.uses_filter == 'False, "uses no filter");
+let c_uses_ordering = require(ops.uses_ordering == 'False, "uses no ordering");
+let c_uses_limit = require(ops.uses_limit == 'False, "uses no limit");
+
+# --- Query 确定性 ---
+let deterministic: Bool = transform_sqlite(plan) == transform_sqlite(plan);
+let c_deterministic = require(deterministic, "transform_sqlite deterministic");
+let profile_query: Query = transform_sqlite_with_profile(plan, plan_profile);
+let c_same_transform = require(profile_query == query, "with_profile equals plain transform");
+let expected_bindings: Array(Val) = ['Int(1), 'Int(7), 'Int(1), 'Int(7)];
+let c_bindings = require(query.bindings == expected_bindings, "binding order matches placeholders");
+
+# --- SQL 结构 ---
+let c_sel = require(string.contains(query.sql, "SELECT"), "SELECT present");
+let c_from = require(string.contains(query.sql, "FROM \"orders\" AS \"e0\""), "FROM orders");
+let c_j1 = require(string.contains(query.sql, "JOIN \"customers\" AS \"e1\""), "join customers");
+let c_j2 = require(string.contains(query.sql, "JOIN \"warehouses\" AS \"e2\""), "join warehouses");
+let c_j3 = require(string.contains(query.sql, "JOIN \"regions\" AS \"e3\""), "join regions");
+let c_j4 = require(string.contains(query.sql, "JOIN \"carriers\" AS \"e4\""), "join carriers");
+let c_j5 = require(string.contains(query.sql, "JOIN \"service_levels\" AS \"e5\""), "join service_levels");
+let c_group = require(string.contains(query.sql, "GROUP BY"), "GROUP BY present");
+let c_count = require(string.contains(query.sql, "COUNT(\"e0\".\"id\")"), "COUNT(orders.id)");
+let c_substr = require(string.contains(query.sql, "substr(\"e0\".\"created_at\", ?, ?)"), "substr in SQL");
+
+# --- 跨 grain：Package grain 的 DeliveredPackages（requires: ['Order]） ---
+let delivered_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'DeliveredPackages, subject: 'Analyst, input: 'Package},
+    ],
+    dimensions: [],
+};
+let plan_delivered: Plan = creator(delivered_request);
+let query_delivered: Query = transform_sqlite_with_profile(plan_delivered, plan_profile);
+let c_del_source_table = require(plan_delivered.source.table == "packages", "delivered source table packages");
+let c_del_source_alias = require(plan_delivered.source.alias == "e0", "delivered source alias e0");
+let c_del_revision = require(plan_delivered.revision == logistics_ontology_revision, "delivered revision");
+let c_del_proj_count = require(array.length(plan_delivered.projection) == 1, "delivered projection has 1 item");
+let c_del_proj_alias = require(plan_delivered.projection[0].alias == "delivered_packages", "delivered projection alias");
+let c_del_proj_expr = require(is_count_of(plan_delivered.projection[0].expr, "e0", "id"), "delivered projection is COUNT(packages.id)");
+let c_del_group_count = require(array.length(plan_delivered.grouping) == 0, "delivered no grouping");
+let c_del_join_count = require(array.length(plan_delivered.joins) == 1, "delivered exactly one Package->Order join");
+let c_del_join0 = require(is_join(plan_delivered.joins[0], "orders", "e1", "e0", "order_id", "e1", "id"), "delivered join Package->Order");
+let c_del_deterministic = require(transform_sqlite(plan_delivered) == transform_sqlite(plan_delivered), "delivered transform deterministic");
+let c_del_sql_from = require(string.contains(query_delivered.sql, "FROM \"packages\" AS \"e0\""), "delivered FROM packages");
+let c_del_sql_join = require(string.contains(query_delivered.sql, "JOIN \"orders\" AS \"e1\" ON \"e0\".\"order_id\" = \"e1\".\"id\""), "delivered JOIN orders");
+
+# --- 跨 grain：PackageItem grain 的 UnitsShipped（requires: ['Package, 'Order]） ---
+let units_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'UnitsShipped, subject: 'Analyst, input: 'PackageItem},
+    ],
+    dimensions: [],
+};
+let plan_units: Plan = creator(units_request);
+let query_units: Query = transform_sqlite_with_profile(plan_units, plan_profile);
+let c_units_source_table = require(plan_units.source.table == "package_items", "units source table package_items");
+let c_units_source_alias = require(plan_units.source.alias == "e0", "units source alias e0");
+let c_units_revision = require(plan_units.revision == logistics_ontology_revision, "units revision");
+let c_units_proj_count = require(array.length(plan_units.projection) == 1, "units projection has 1 item");
+let c_units_proj_alias = require(plan_units.projection[0].alias == "units_shipped", "units projection alias");
+let c_units_proj_expr = require(is_count_of(plan_units.projection[0].expr, "e0", "id"), "units projection is COUNT(package_items.id)");
+let c_units_group_count = require(array.length(plan_units.grouping) == 0, "units no grouping");
+let c_units_join_count = require(array.length(plan_units.joins) == 2, "units exactly two joins");
+let c_units_join0 = require(is_join(plan_units.joins[0], "packages", "e1", "e0", "package_id", "e1", "id"), "units join PackageItem->Package");
+let c_units_join1 = require(is_join(plan_units.joins[1], "orders", "e2", "e1", "order_id", "e2", "id"), "units join Package->Order");
+let c_units_deterministic = require(transform_sqlite(plan_units) == transform_sqlite(plan_units), "units transform deterministic");
+let c_units_sql_from = require(string.contains(query_units.sql, "FROM \"package_items\" AS \"e0\""), "units FROM package_items");
+let c_units_sql_join1 = require(string.contains(query_units.sql, "JOIN \"packages\" AS \"e1\" ON \"e0\".\"package_id\" = \"e1\".\"id\""), "units JOIN packages");
+let c_units_sql_join2 = require(string.contains(query_units.sql, "JOIN \"orders\" AS \"e2\" ON \"e1\".\"order_id\" = \"e2\".\"id\""), "units JOIN orders");
+
+export let output = `verify ok: order joins=\{array.length(plan.joins)} projection=\{array.length(plan.projection)} grouping=\{array.length(plan.grouping)}; delivered joins=\{array.length(plan_delivered.joins)} sql=\{query_delivered.sql}; units joins=\{array.length(plan_units.joins)} sql=\{query_units.sql}`;

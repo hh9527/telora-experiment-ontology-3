@@ -1,0 +1,7 @@
+# 非法意图入口：统计已创建订单数，并按所含商品的商品类别分组。
+# ProductCategory 是公共词汇成员，但按 Order 粒度请求应被拒绝（unsafe-path），
+# 不产生 Query；因此本入口在 lower 处失败，无 Output 发布。
+import "@src/request.telora" { lower_illegal };
+
+let query = lower_illegal();
+export def output: String = query.sql;

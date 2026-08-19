@@ -1,0 +1,69 @@
+# Ent-1 公共查询面入口
+#
+# 使用不针对隐藏意图的通用 typed Request，实际验证：
+#   - facade 可加载（lower 可调用）；
+#   - lowering 确定（同一 Request 两次 lower 得到相同 Query）；
+#   - 结果可编码（Query 可经 codec 稳定编码为 Value/JSON）。
+# 覆盖三个 grain 的通用请求。
+
+import "@src/query.telora" {
+    Request, lower, MeasureId, DimensionId, Subject, GrainId,
+};
+import "query-builder/query-builder.telora" { Query };
+import "std/codec" as codec;
+import "std/value" { Value };
+
+def require: Fn(Bool, String) -> Bool = fn(cond, label) {
+    if cond { 'True } else { fail!(`query-surface failed: \{label}`, cond) }
+};
+
+def encodable: Fn(Query) -> Bool = fn(query) {
+    match codec.encode(Value, query) {
+        'Ok(_) => 'True,
+        'Err(_) => 'False,
+    }
+};
+
+# 通用请求 A：Order grain，单指标 + 两个维度
+let request_a: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: 'Analyst, input: 'Order},
+        {id: 'CustomerTier, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+# 通用请求 B：Package grain，单指标
+let request_b: Request = {
+    measures: [
+        {id: 'DeliveredPackages, subject: 'Analyst, input: 'Package},
+    ],
+    dimensions: [],
+};
+
+# 通用请求 C：PackageItem grain，单指标
+let request_c: Request = {
+    measures: [
+        {id: 'UnitsShipped, subject: 'Analyst, input: 'PackageItem},
+    ],
+    dimensions: [],
+};
+
+let query_a: Query = lower(request_a);
+let c_a_load = require('True, "facade loads (A)");
+let c_a_det = require(lower(request_a) == query_a, "lowering deterministic (A)");
+let c_a_enc = require(encodable(query_a), "result encodable (A)");
+
+let query_b: Query = lower(request_b);
+let c_b_load = require('True, "facade loads (B)");
+let c_b_det = require(lower(request_b) == query_b, "lowering deterministic (B)");
+let c_b_enc = require(encodable(query_b), "result encodable (B)");
+
+let query_c: Query = lower(request_c);
+let c_c_load = require('True, "facade loads (C)");
+let c_c_det = require(lower(request_c) == query_c, "lowering deterministic (C)");
+let c_c_enc = require(encodable(query_c), "result encodable (C)");
+
+export let output = "query-surface ok: a deterministic+encodable; b deterministic+encodable; c deterministic+encodable";

@@ -1,0 +1,799 @@
+# query-builder/src/query-builder.telora
+#
+# QueryBuilder：领域无关的基础 package。
+#
+# 提供封闭、可枚举的标准 Plan 算子 vocabulary、显式的 PlanProfile 能力声明、
+# 纯验证能力（operators(plan) <= profile），以及确定性的 SQLite
+# Plan -> Query 具体化。它不了解 ontology、企业实体、指标、维度或查询题面。
+#
+# 核心保证：
+#   - 动态数据只能作为有类型绑定值（Val），全部进入 Query.bindings；
+#   - SQL 标识符与用户值在类型与 lowering 路径上分开；
+#   - 同一合法 Plan 逐字节产生相同 SQL 与相同顺序的 bindings；
+#   - 非法、profile 不支持或无法具体化的 Plan 通过 fail! 失败，不发布部分 Query。
+
+import "std/array" as array;
+import "std/regex" as regex;
+import "std/string" as string;
+
+# ---------------------------------------------------------------
+# 运行时值：所有动态数据都作为有类型绑定值进入 bindings。
+# ---------------------------------------------------------------
+type Val = enum {
+    'String(String),
+    'Int(Int),
+    'Float(Float),
+    'Bool(Bool),
+};
+
+# ---------------------------------------------------------------
+# SQL 标识符：与用户值在类型和 lowering 路径上分开。
+# ---------------------------------------------------------------
+type DataSource = struct {
+    table: String,
+    alias: String,
+};
+
+type ColumnRef = struct {
+    alias: String,
+    column: String,
+};
+
+# ---------------------------------------------------------------
+# 封闭、可枚举的标准算子 vocabulary。
+# 同名算子的语义不随 profile 或调用方变化。
+# ---------------------------------------------------------------
+type JoinKind = enum {
+    'Inner,
+    'Left,
+};
+
+type CompareOp = enum {
+    'Eq,
+    'Ne,
+    'Lt,
+    'Le,
+    'Gt,
+    'Ge,
+};
+
+type ScalarFn = enum {
+    'Lower,
+    'Upper,
+    'Length,
+    'Abs,
+    'Round,
+    'Coalesce,
+    'Substr,
+};
+
+type AggregateFn = enum {
+    'Count,
+    'CountDistinct,
+    'Sum,
+    'Avg,
+    'Min,
+    'Max,
+};
+
+type OrderDirection = enum {
+    'Asc,
+    'Desc,
+};
+
+# ---------------------------------------------------------------
+# 表达式：结构化表达式，不接受预渲染的 SQL 片段。
+# ---------------------------------------------------------------
+type ScalarCall = struct {
+    kind: ScalarFn,
+    args: Array(Expr),
+};
+
+type CompareExpr = struct {
+    op: CompareOp,
+    left: Expr,
+    right: Expr,
+};
+
+type AggregateCall = struct {
+    kind: AggregateFn,
+    arg: Expr,
+};
+
+type Expr = enum {
+    'Column(ColumnRef),
+    'Bound(Val),
+    'ScalarCall(ScalarCall),
+    'Compare(CompareExpr),
+    'Aggregate(AggregateCall),
+};
+
+# ---------------------------------------------------------------
+# Plan：完整保留 revision、数据源、投影、filter、join、grouping、
+# ordering 与 limit。
+# ---------------------------------------------------------------
+type ProjectionItem = struct {
+    expr: Expr,
+    alias: String,
+};
+
+type Join = struct {
+    kind: JoinKind,
+    source: DataSource,
+    left: ColumnRef,
+    right: ColumnRef,
+};
+
+type OrderItem = struct {
+    expr: Expr,
+    direction: OrderDirection,
+};
+
+type Plan = struct {
+    revision: String,
+    source: DataSource,
+    projection: Array(ProjectionItem),
+    filter: Array(Expr),
+    joins: Array(Join),
+    grouping: Array(Expr),
+    ordering: Array(OrderItem),
+    limit: Option(Int),
+};
+
+type Query = struct {
+    sql: String,
+    bindings: Array(Val),
+};
+
+# ---------------------------------------------------------------
+# PlanProfile：标准算子能力的显式声明，不是隐式全局状态，
+# 也不改变算子语义。
+# ---------------------------------------------------------------
+type PlanProfile = struct {
+    allow_joins: Array(JoinKind),
+    allow_scalar: Array(ScalarFn),
+    allow_aggregate: Array(AggregateFn),
+    allow_filter: Bool,
+    allow_grouping: Bool,
+    allow_ordering: Bool,
+    allow_limit: Bool,
+};
+
+# operators(plan) 的结果：plan 实际使用的算子集合。
+type OperatorSet = struct {
+    joins: Array(JoinKind),
+    scalars: Array(ScalarFn),
+    aggregates: Array(AggregateFn),
+    uses_filter: Bool,
+    uses_grouping: Bool,
+    uses_ordering: Bool,
+    uses_limit: Bool,
+};
+
+# ---------------------------------------------------------------
+# 标识符检查：SQLite 可接受的 bare identifier 词法。
+# ---------------------------------------------------------------
+let sql_identifier = regex.compile(r"^[A-Za-z_][A-Za-z0-9_]*$");
+
+def valid_identifier: Fn(String) -> Bool = fn(text) {
+    regex.is_match(sql_identifier, text)
+};
+
+# ---------------------------------------------------------------
+# 结构化验证。
+# ---------------------------------------------------------------
+type ExprCtx = struct {
+    allow_aggregate: Bool,
+    allow_bound: Bool,
+    allow_compare: Bool,
+    aliases: Array(String),
+};
+
+def scalar_arity: Fn(ScalarFn, Int) -> Bool = fn(kind, count) {
+    match kind {
+        'Round => count == 1 || count == 2,
+        'Coalesce => count >= 2,
+        'Substr => count == 2 || count == 3,
+        _ => count == 1,
+    }
+};
+
+def scalar_name: Fn(ScalarFn) -> String = fn(kind) {
+    match kind {
+        'Lower => "lower",
+        'Upper => "upper",
+        'Length => "length",
+        'Abs => "abs",
+        'Round => "round",
+        'Coalesce => "coalesce",
+        'Substr => "substr",
+    }
+};
+
+def validate_expr: Fn(Expr, ExprCtx) -> Result(Expr, String) = fn(expr, ctx) {
+    match expr {
+        'Column(col) =>
+            if array.any(ctx.aliases, fn(alias) { alias == col.alias }) {
+                if valid_identifier(col.column) {
+                    'Ok(expr)
+                } else {
+                    'Err(`invalid column identifier "\{col.column}"`)
+                }
+            } else {
+                'Err(`column references undefined alias "\{col.alias}"`)
+            },
+        'Bound(_) =>
+            if ctx.allow_bound {
+                'Ok(expr)
+            } else {
+                'Err("bound value is not allowed in this position")
+            },
+        'Compare(comp) =>
+            if !ctx.allow_compare {
+                'Err("comparison is only allowed as a top-level filter condition")
+            } else {
+                let inner: ExprCtx = {
+                    allow_aggregate: 'False,
+                    allow_bound: 'True,
+                    allow_compare: 'False,
+                    aliases: ctx.aliases,
+                };
+                match validate_expr(comp.left, inner) {
+                    'Err(message) => 'Err(message),
+                    'Ok(_) => validate_expr(comp.right, inner),
+                }
+            },
+        'ScalarCall(call) =>
+            if scalar_arity(call.kind, array.length(call.args)) {
+                match validate_expr_args(call.args, ctx) {
+                    'Err(message) => 'Err(message),
+                    'Ok(_) => 'Ok(expr),
+                }
+            } else {
+                'Err(`invalid arity for scalar function \{scalar_name(call.kind)}`)
+            },
+        'Aggregate(agg) =>
+            if !ctx.allow_aggregate {
+                'Err("aggregate is not allowed in this position")
+            } else {
+                let inner: ExprCtx = {
+                    allow_aggregate: 'False,
+                    allow_bound: ctx.allow_bound,
+                    allow_compare: 'False,
+                    aliases: ctx.aliases,
+                };
+                validate_expr(agg.arg, inner)
+            },
+    }
+};
+
+def validate_expr_args: Fn(Array(Expr), ExprCtx) -> Result(Array(Expr), String) = fn(args, ctx) {
+    array.fold(args, 'Ok([]), fn(acc, arg) {
+        match acc {
+            'Err(_) => acc,
+            'Ok(validated) => {
+                let inner: ExprCtx = {
+                    allow_aggregate: ctx.allow_aggregate,
+                    allow_bound: ctx.allow_bound,
+                    allow_compare: 'False,
+                    aliases: ctx.aliases,
+                };
+                match validate_expr(arg, inner) {
+                    'Err(message) => 'Err(message),
+                    'Ok(value) => 'Ok(array.push(validated, value)),
+                }
+            }
+        }
+    })
+};
+
+def validate_projection: Fn(Array(ProjectionItem), ExprCtx) -> Result(Array(ProjectionItem), String) = fn(items, ctx) {
+    array.fold(items, 'Ok([]), fn(acc, item) {
+        match acc {
+            'Err(_) => acc,
+            'Ok(validated) =>
+                if valid_identifier(item.alias) {
+                    match validate_expr(item.expr, ctx) {
+                        'Err(message) => 'Err(message),
+                        'Ok(_) => 'Ok(array.push(validated, item)),
+                    }
+                } else {
+                    'Err(`invalid projection alias "\{item.alias}"`)
+                }
+        }
+    })
+};
+
+def validate_ordering: Fn(Array(OrderItem), ExprCtx) -> Result(Array(OrderItem), String) = fn(items, ctx) {
+    array.fold(items, 'Ok([]), fn(acc, item) {
+        match acc {
+            'Err(_) => acc,
+            'Ok(validated) =>
+                match validate_expr(item.expr, ctx) {
+                    'Err(message) => 'Err(message),
+                    'Ok(_) => 'Ok(array.push(validated, item)),
+                }
+        }
+    })
+};
+
+def validate_expr_list: Fn(Array(Expr), ExprCtx) -> Result(Array(Expr), String) = fn(items, ctx) {
+    array.fold(items, 'Ok([]), fn(acc, item) {
+        match acc {
+            'Err(_) => acc,
+            'Ok(validated) =>
+                match validate_expr(item, ctx) {
+                    'Err(message) => 'Err(message),
+                    'Ok(_) => 'Ok(array.push(validated, item)),
+                }
+        }
+    })
+};
+
+# grouping 表达式：顶层只允许列或标量调用（不允许绑定值、聚合、比较）；
+# 标量调用参数中的绑定值允许（例如 substr(col, ?, ?)），以保证
+# substr(orders.created_at, 1, 7) 这类参数化分组可以合法表达与 lowering。
+def validate_grouping: Fn(Array(Expr), ExprCtx) -> Result(Array(Expr), String) = fn(items, ctx) {
+    array.fold(items, 'Ok([]), fn(acc, item) {
+        match acc {
+            'Err(_) => acc,
+            'Ok(validated) =>
+                match validate_grouping_root(item, ctx) {
+                    'Err(message) => 'Err(message),
+                    'Ok(_) => 'Ok(array.push(validated, item)),
+                }
+        }
+    })
+};
+
+def grouping_nested_ctx: Fn(ExprCtx) -> ExprCtx = fn(ctx) {
+    {
+        allow_aggregate: 'False,
+        allow_bound: 'True,
+        allow_compare: 'False,
+        aliases: ctx.aliases,
+    }
+};
+
+def validate_grouping_root: Fn(Expr, ExprCtx) -> Result(Expr, String) = fn(expr, ctx) {
+    match expr {
+        'Column(_) => validate_expr(expr, grouping_nested_ctx(ctx)),
+        'ScalarCall(_) => validate_expr(expr, grouping_nested_ctx(ctx)),
+        'Bound(_) => 'Err("bound value is not allowed as a top-level grouping expression"),
+        'Compare(_) => 'Err("comparison is only allowed as a top-level filter condition"),
+        'Aggregate(_) => 'Err("aggregate is not allowed in this position"),
+    }
+};
+
+# 依次验证 join：left 必须引用已定义 alias，right 必须引用当前 join 的
+# source alias；source alias 不得重复。
+def validate_joins: Fn(Array(Join), Array(String)) -> Result(Array(String), String) = fn(joins, defined) {
+    array.fold(joins, 'Ok(defined), fn(acc, join) {
+        match acc {
+            'Err(_) => acc,
+            'Ok(aliases) =>
+                if !valid_identifier(join.source.table) {
+                    'Err(`invalid table identifier "\{join.source.table}"`)
+                } else if !valid_identifier(join.source.alias) {
+                    'Err(`invalid join alias "\{join.source.alias}"`)
+                } else if array.any(aliases, fn(alias) { alias == join.source.alias }) {
+                    'Err(`duplicate alias "\{join.source.alias}"`)
+                } else if !array.any(aliases, fn(alias) { alias == join.left.alias }) {
+                    'Err(`join left references undefined alias "\{join.left.alias}"`)
+                } else if join.right.alias != join.source.alias {
+                    'Err(`join right must reference the join source alias "\{join.source.alias}"`)
+                } else if !valid_identifier(join.left.column) {
+                    'Err(`invalid join left column "\{join.left.column}"`)
+                } else if !valid_identifier(join.right.column) {
+                    'Err(`invalid join right column "\{join.right.column}"`)
+                } else {
+                    'Ok(array.push(aliases, join.source.alias))
+                }
+        }
+    })
+};
+
+def projection_aliases_unique: Fn(Array(ProjectionItem)) -> Bool = fn(items) {
+    let aliases = array.map(items, fn(item) { item.alias });
+    let indexed = array.enumerate(aliases);
+    !array.any(indexed, fn(pair) {
+        array.any(indexed, fn(other) { other.0 > pair.0 && other.1 == pair.1 })
+    })
+};
+
+def validate_limit: Fn(Option(Int)) -> Result(Option(Int), String) = fn(limit) {
+    match limit {
+        'None => 'Ok(limit),
+        'Some(count) => if count >= 0 { 'Ok(limit) } else { 'Err(`invalid limit \{count}: must be non-negative`) },
+    }
+};
+
+def validate_parts: Fn(Plan, Array(String)) -> Result(Plan, String) = fn(plan, aliases) {
+    let projection_ctx: ExprCtx = {
+        allow_aggregate: 'True,
+        allow_bound: 'True,
+        allow_compare: 'False,
+        aliases: aliases,
+    };
+    let filter_ctx: ExprCtx = {
+        allow_aggregate: 'False,
+        allow_bound: 'True,
+        allow_compare: 'True,
+        aliases: aliases,
+    };
+    let grouping_ctx: ExprCtx = {
+        allow_aggregate: 'False,
+        allow_bound: 'False,
+        allow_compare: 'False,
+        aliases: aliases,
+    };
+    let ordering_ctx: ExprCtx = {
+        allow_aggregate: 'True,
+        allow_bound: 'True,
+        allow_compare: 'False,
+        aliases: aliases,
+    };
+    match validate_projection(plan.projection, projection_ctx) {
+        'Err(message) => 'Err(message),
+        'Ok(_) => match validate_expr_list(plan.filter, filter_ctx) {
+            'Err(message) => 'Err(message),
+            'Ok(_) => match validate_grouping(plan.grouping, grouping_ctx) {
+                'Err(message) => 'Err(message),
+                'Ok(_) => match validate_ordering(plan.ordering, ordering_ctx) {
+                    'Err(message) => 'Err(message),
+                    'Ok(_) => match validate_limit(plan.limit) {
+                        'Err(message) => 'Err(message),
+                        'Ok(_) => 'Ok(plan),
+                    }
+                }
+            }
+        }
+    }
+};
+
+# 纯结构验证：检查标识符、引用、算子位置、arity 与 limit。
+# 返回 Ok(plan) 或 Err(诊断)。
+def validate_plan: Fn(Plan) -> Result(Plan, String) = fn(plan) {
+    if !valid_identifier(plan.source.table) {
+        'Err(`invalid table identifier "\{plan.source.table}"`)
+    } else if !valid_identifier(plan.source.alias) {
+        'Err(`invalid source alias "\{plan.source.alias}"`)
+    } else if array.length(plan.projection) == 0 {
+        'Err("projection must be non-empty")
+    } else if !projection_aliases_unique(plan.projection) {
+        'Err("projection aliases must be unique")
+    } else {
+        match validate_joins(plan.joins, [plan.source.alias]) {
+            'Err(message) => 'Err(message),
+            'Ok(aliases) => validate_parts(plan, aliases),
+        }
+    }
+};
+
+# ---------------------------------------------------------------
+# operators(plan)：plan 实际使用的算子集合（稳定去重、首次出现顺序）。
+# ---------------------------------------------------------------
+def push_distinct_scalar: Fn(Array(ScalarFn), Array(ScalarFn)) -> Array(ScalarFn) = fn(seen, found) {
+    array.fold(found, seen, fn(acc, kind) {
+        if array.any(acc, fn(existing) { existing == kind }) {
+            acc
+        } else {
+            array.push(acc, kind)
+        }
+    })
+};
+
+def push_distinct_aggregate: Fn(Array(AggregateFn), Array(AggregateFn)) -> Array(AggregateFn) = fn(seen, found) {
+    array.fold(found, seen, fn(acc, kind) {
+        if array.any(acc, fn(existing) { existing == kind }) {
+            acc
+        } else {
+            array.push(acc, kind)
+        }
+    })
+};
+
+def collect_expr_ops: Fn(Expr, Array(ScalarFn), Array(AggregateFn)) -> Tuple([Array(ScalarFn), Array(AggregateFn)]) = fn(expr, scalars, aggregates) {
+    match expr {
+        'Column(_) => (scalars, aggregates),
+        'Bound(_) => (scalars, aggregates),
+        'ScalarCall(call) => {
+            let scalars2 = push_distinct_scalar(scalars, [call.kind]);
+            array.fold(call.args, (scalars2, aggregates), fn(acc, arg) {
+                collect_expr_ops(arg, acc.0, acc.1)
+            })
+        },
+        'Compare(comp) => {
+            let left = collect_expr_ops(comp.left, scalars, aggregates);
+            collect_expr_ops(comp.right, left.0, left.1)
+        },
+        'Aggregate(agg) => {
+            let aggregates2 = push_distinct_aggregate(aggregates, [agg.kind]);
+            collect_expr_ops(agg.arg, scalars, aggregates2)
+        },
+    }
+};
+
+def operators: Fn(Plan) -> OperatorSet = fn(plan) {
+    let from_projection = array.fold(plan.projection, ([], []), fn(acc, item) {
+        collect_expr_ops(item.expr, acc.0, acc.1)
+    });
+    let from_filter = array.fold(plan.filter, (from_projection.0, from_projection.1), fn(acc, condition) {
+        collect_expr_ops(condition, acc.0, acc.1)
+    });
+    let from_grouping = array.fold(plan.grouping, (from_filter.0, from_filter.1), fn(acc, expr) {
+        collect_expr_ops(expr, acc.0, acc.1)
+    });
+    let from_ordering = array.fold(plan.ordering, (from_grouping.0, from_grouping.1), fn(acc, item) {
+        collect_expr_ops(item.expr, acc.0, acc.1)
+    });
+    let join_kinds = array.fold(plan.joins, [], fn(acc, join) {
+        if array.any(acc, fn(kind) { kind == join.kind }) {
+            acc
+        } else {
+            array.push(acc, join.kind)
+        }
+    });
+    {
+        joins: join_kinds,
+        scalars: from_ordering.0,
+        aggregates: from_ordering.1,
+        uses_filter: array.length(plan.filter) > 0,
+        uses_grouping: array.length(plan.grouping) > 0,
+        uses_ordering: array.length(plan.ordering) > 0,
+        uses_limit: match plan.limit {
+            'Some(_) => 'True,
+            'None => 'False,
+        },
+    }
+};
+
+# ---------------------------------------------------------------
+# Profile 覆盖：operators(plan) <= profile。
+# ---------------------------------------------------------------
+def profile_covers: Fn(OperatorSet, PlanProfile) -> Bool = fn(ops, profile) {
+    let joins_ok = array.all(ops.joins, fn(kind) { array.any(profile.allow_joins, fn(allowed) { allowed == kind }) });
+    let scalars_ok = array.all(ops.scalars, fn(kind) { array.any(profile.allow_scalar, fn(allowed) { allowed == kind }) });
+    let aggregates_ok = array.all(ops.aggregates, fn(kind) { array.any(profile.allow_aggregate, fn(allowed) { allowed == kind }) });
+    let filter_ok = !ops.uses_filter || profile.allow_filter;
+    let grouping_ok = !ops.uses_grouping || profile.allow_grouping;
+    let ordering_ok = !ops.uses_ordering || profile.allow_ordering;
+    let limit_ok = !ops.uses_limit || profile.allow_limit;
+    joins_ok && scalars_ok && aggregates_ok && filter_ok && grouping_ok && ordering_ok && limit_ok
+};
+
+def within_profile: Fn(Plan, PlanProfile) -> Bool = fn(plan, profile) {
+    profile_covers(operators(plan), profile)
+};
+
+# ---------------------------------------------------------------
+# SQLite 具体化：纯、确定。所有运行时值进入 bindings，SQL 只生成
+# "?" 占位符与双引号标识符。
+# ---------------------------------------------------------------
+type LowerState = struct {
+    bindings: Array(Val),
+};
+
+def aggregate_name: Fn(AggregateFn) -> String = fn(kind) {
+    match kind {
+        'Count => "COUNT",
+        'CountDistinct => "COUNT",
+        'Sum => "SUM",
+        'Avg => "AVG",
+        'Min => "MIN",
+        'Max => "MAX",
+    }
+};
+
+def compare_sql: Fn(CompareOp) -> String = fn(op) {
+    match op {
+        'Eq => "=",
+        'Ne => "<>",
+        'Lt => "<",
+        'Le => "<=",
+        'Gt => ">",
+        'Ge => ">=",
+    }
+};
+
+def join_sql: Fn(JoinKind) -> String = fn(kind) {
+    match kind {
+        'Inner => "JOIN",
+        'Left => "LEFT JOIN",
+    }
+};
+
+def order_sql: Fn(OrderDirection) -> String = fn(direction) {
+    match direction {
+        'Asc => "ASC",
+        'Desc => "DESC",
+    }
+};
+
+def render_expr: Fn(Expr, LowerState) -> Tuple([String, LowerState]) = fn(expr, state) {
+    match expr {
+        'Column(col) => (`"\{col.alias}"."\{col.column}"`, state),
+        'Bound(val) => {
+            let next: LowerState = {bindings: array.push(state.bindings, val)};
+            ("?", next)
+        },
+        'ScalarCall(call) => render_scalar_call(call, state),
+        'Compare(comp) => render_compare(comp, state),
+        'Aggregate(agg) => render_aggregate(agg, state),
+    }
+};
+
+def render_call: Fn(String, Array(Expr), LowerState) -> Tuple([String, LowerState]) = fn(name, args, state) {
+    let rendered = array.fold(args, ([], state), fn(acc, arg) {
+        let pair = render_expr(arg, acc.1);
+        (array.push(acc.0, pair.0), pair.1)
+    });
+    let body = string.join(rendered.0, ", ");
+    (`\{name}(\{body})`, rendered.1)
+};
+
+def render_scalar_call: Fn(ScalarCall, LowerState) -> Tuple([String, LowerState]) = fn(call, state) {
+    render_call(scalar_name(call.kind), call.args, state)
+};
+
+def render_compare: Fn(CompareExpr, LowerState) -> Tuple([String, LowerState]) = fn(comp, state) {
+    let left = render_expr(comp.left, state);
+    let right = render_expr(comp.right, left.1);
+    (`(\{left.0} \{compare_sql(comp.op)} \{right.0})`, right.1)
+};
+
+def render_aggregate: Fn(AggregateCall, LowerState) -> Tuple([String, LowerState]) = fn(agg, state) {
+    let inner = render_expr(agg.arg, state);
+    match agg.kind {
+        'CountDistinct => (`COUNT(DISTINCT \{inner.0})`, inner.1),
+        _ => (`\{aggregate_name(agg.kind)}(\{inner.0})`, inner.1),
+    }
+};
+
+def render_projection_item: Fn(ProjectionItem, LowerState) -> Tuple([String, LowerState]) = fn(item, state) {
+    let rendered = render_expr(item.expr, state);
+    (`\{rendered.0} AS "\{item.alias}"`, rendered.1)
+};
+
+def render_projection: Fn(Array(ProjectionItem), LowerState) -> Tuple([Array(String), LowerState]) = fn(items, state) {
+    array.fold(items, ([], state), fn(acc, item) {
+        let rendered = render_projection_item(item, acc.1);
+        (array.push(acc.0, rendered.0), rendered.1)
+    })
+};
+
+# join 片段自带前导空格，多个 join 以空串连接，保证与 FROM 子句相邻。
+def render_join: Fn(Join, LowerState) -> Tuple([String, LowerState]) = fn(join, state) {
+    (` \{join_sql(join.kind)} "\{join.source.table}" AS "\{join.source.alias}" ON "\{join.left.alias}"."\{join.left.column}" = "\{join.right.alias}"."\{join.right.column}"`, state)
+};
+
+def render_joins: Fn(Array(Join), LowerState) -> Tuple([Array(String), LowerState]) = fn(joins, state) {
+    array.fold(joins, ([], state), fn(acc, join) {
+        let rendered = render_join(join, acc.1);
+        (array.push(acc.0, rendered.0), rendered.1)
+    })
+};
+
+def render_filter: Fn(Array(Expr), LowerState) -> Tuple([Option(String), LowerState]) = fn(conditions, state) {
+    if array.length(conditions) == 0 {
+        ('None, state)
+    } else {
+        let rendered = array.fold(conditions, ([], state), fn(acc, condition) {
+            let pair = render_expr(condition, acc.1);
+            (array.push(acc.0, pair.0), pair.1)
+        });
+        ('Some(` WHERE \{string.join(rendered.0, " AND ")}`), rendered.1)
+    }
+};
+
+def render_grouping: Fn(Array(Expr), LowerState) -> Tuple([Option(String), LowerState]) = fn(items, state) {
+    if array.length(items) == 0 {
+        ('None, state)
+    } else {
+        let rendered = array.fold(items, ([], state), fn(acc, item) {
+            let pair = render_expr(item, acc.1);
+            (array.push(acc.0, pair.0), pair.1)
+        });
+        ('Some(` GROUP BY \{string.join(rendered.0, ", ")}`), rendered.1)
+    }
+};
+
+def render_ordering: Fn(Array(OrderItem), LowerState) -> Tuple([Option(String), LowerState]) = fn(items, state) {
+    if array.length(items) == 0 {
+        ('None, state)
+    } else {
+        let rendered = array.fold(items, ([], state), fn(acc, item) {
+            let pair = render_expr(item.expr, acc.1);
+            (array.push(acc.0, `\{pair.0} \{order_sql(item.direction)}`), pair.1)
+        });
+        ('Some(` ORDER BY \{string.join(rendered.0, ", ")}`), rendered.1)
+    }
+};
+
+def render_limit: Fn(Option(Int), LowerState) -> Tuple([Option(String), LowerState]) = fn(limit, state) {
+    match limit {
+        'None => ('None, state),
+        'Some(count) => {
+            let next: LowerState = {bindings: array.push(state.bindings, 'Int(count))};
+            ('Some(" LIMIT ?"), next)
+        },
+    }
+};
+
+def lower_plan: Fn(Plan) -> Query = fn(plan) {
+    let initial: LowerState = {bindings: []};
+    let projection = render_projection(plan.projection, initial);
+    let joins = render_joins(plan.joins, projection.1);
+    let filter = render_filter(plan.filter, joins.1);
+    let grouping = render_grouping(plan.grouping, filter.1);
+    let ordering = render_ordering(plan.ordering, grouping.1);
+    let limit = render_limit(plan.limit, ordering.1);
+    let join_text = string.join(joins.0, "");
+    let filter_text = match filter.0 {
+        'Some(text) => text,
+        'None => "",
+    };
+    let grouping_text = match grouping.0 {
+        'Some(text) => text,
+        'None => "",
+    };
+    let ordering_text = match ordering.0 {
+        'Some(text) => text,
+        'None => "",
+    };
+    let limit_text = match limit.0 {
+        'Some(text) => text,
+        'None => "",
+    };
+    let sql = `SELECT \{string.join(projection.0, ", ")} FROM "\{plan.source.table}" AS "\{plan.source.alias}"\{join_text}\{filter_text}\{grouping_text}\{ordering_text}\{limit_text}`;
+    {sql: sql, bindings: limit.1.bindings}
+};
+
+# ---------------------------------------------------------------
+# 公共转换入口。
+# ---------------------------------------------------------------
+def transform_sqlite: Fn(Plan) -> Query = fn(plan) {
+    match validate_plan(plan) {
+        'Err(message) => fail!(`query-builder.structure: \{message}`, plan),
+        'Ok(valid) => lower_plan(valid),
+    }
+};
+
+def transform_sqlite_with_profile: Fn(Plan, PlanProfile) -> Query = fn(plan, profile) {
+    if within_profile(plan, profile) {
+        transform_sqlite(plan)
+    } else {
+        fail!("query-builder.profile: plan uses operators not accepted by the profile", plan, profile)
+    }
+};
+
+# ---------------------------------------------------------------
+# 公共导出。
+# ---------------------------------------------------------------
+export {
+    Val,
+    DataSource,
+    ColumnRef,
+    JoinKind,
+    CompareOp,
+    ScalarFn,
+    AggregateFn,
+    OrderDirection,
+    ScalarCall,
+    CompareExpr,
+    AggregateCall,
+    Expr,
+    ProjectionItem,
+    Join,
+    OrderItem,
+    Plan,
+    Query,
+    PlanProfile,
+    OperatorSet,
+    operators,
+    profile_covers,
+    within_profile,
+    validate_plan,
+    transform_sqlite,
+    transform_sqlite_with_profile,
+};

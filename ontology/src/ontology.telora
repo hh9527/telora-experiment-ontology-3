@@ -1,0 +1,818 @@
+# ontology/src/ontology.telora
+# EnterpriseKnowledge eDSL: typed enterprise knowledge -> Request -> Plan.
+# Plan/PlanProfile/Query come from the QueryBuilder public contract; this module
+# only assembles standard operators and validates the result against the profile.
+#
+# The enterprise owns its closed vocabulary, including the grain vocabulary and the
+# per-grain base data sources. Physical expressions are structured:
+#   ExprNode = Attribute(catalog ref) | Bound(Val) | ScalarCall(ScalarFn, ...)
+# Telora does not support parameterized recursive families, so the recursive
+# expression tree is a closed concrete type; attribute leaves reference the
+# knowledge attribute catalog by index, are built through typed helpers from the
+# enterprise AttributeId, and are recursively validated at knowledge construction.
+
+import "std/array" as array;
+import "std/regex" as regex;
+import "query-builder/query-builder.telora" {
+    Plan, PlanProfile, DataSource, ColumnRef, Expr, ProjectionItem, Join, JoinKind,
+    AggregateFn, ScalarFn, Val, OrderItem, Query, OperatorSet, operators,
+    within_profile, profile_covers, validate_plan, transform_sqlite,
+    transform_sqlite_with_profile,
+};
+
+let sql_identifier = regex.compile(r"^[A-Za-z_][A-Za-z0-9_]*$");
+
+def valid_identifier: Fn(String) -> Bool = fn(text) {
+    regex.is_match(sql_identifier, text)
+};
+
+# ---------------- Request shape (DESIGN.md reference) ----------------
+
+type Request(Id, Subject, Input) = struct {
+    id: Id,
+    subject: Subject,
+    input: Input,
+};
+
+type QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput) = struct {
+    measures: Array(Request(MeasureId, Subject, MeasureInput)),
+    dimensions: Array(Request(DimensionId, Subject, DimensionInput)),
+};
+
+# ---------------- Structured physical expressions ----------------
+
+# Closed, typed, recursive expression over the enterprise attribute catalog.
+# Lowering resolves the entity alias and produces a standard QueryBuilder Expr;
+# dynamic values stay typed Bound(Val) and enter Query bindings.
+type AttributeRef = struct {
+    index: Int,
+};
+
+type ExprCall = struct {
+    kind: ScalarFn,
+    args: Array(ExprNode),
+};
+
+type ExprNode = enum {
+    'Attribute(AttributeRef),
+    'Bound(Val),
+    'ScalarCall(ExprCall),
+};
+
+# Typed construction helpers: build expression nodes from the enterprise
+# AttributeId (looking up the catalog index) and from typed constants/scalars.
+def attribute_node: for(E, A) Fn(Array(AttributeDef(E, A)), A) -> ExprNode = fn(attrs, id) {
+    let result: ExprNode = match array.find(array.enumerate(attrs), fn(pair) { pair.1.id == id }) {
+        'Some(pair) => 'Attribute({index: pair.0}),
+        'None => fail!("enterprise-knowledge.invalid-knowledge: attribute not found for expression", id),
+    };
+    result
+};
+
+def bound_node: Fn(Val) -> ExprNode = fn(value) {
+    'Bound(value)
+};
+
+def scalar_node: Fn(ScalarFn, Array(ExprNode)) -> ExprNode = fn(kind, args) {
+    'ScalarCall({kind: kind, args: args})
+};
+
+# ---------------- Enterprise knowledge ----------------
+
+type RelationshipKind = enum { 'Safe, 'FanOut };
+
+type GrainBase(GrainId, EntityId) = struct {
+    grain: GrainId,
+    base: EntityId,
+};
+
+type EntityDef(EntityId) = struct {
+    id: EntityId,
+    table: String,
+};
+
+type AttributeDef(EntityId, AttributeId) = struct {
+    id: AttributeId,
+    entity: EntityId,
+    column: String,
+};
+
+type MetricDef(EntityId, AttributeId, MeasureId, GrainId, Subject) = struct {
+    id: MeasureId,
+    entity: EntityId,
+    requires: Array(EntityId),
+    aggregate: AggregateFn,
+    expr: ExprNode,
+    grain: GrainId,
+    alias: String,
+    subjects: Array(Subject),
+};
+
+type DimensionDef(EntityId, AttributeId, DimensionId, GrainId, Subject) = struct {
+    id: DimensionId,
+    entity: EntityId,
+    requires: Array(EntityId),
+    levels: Array(ExprNode),
+    grain: GrainId,
+    alias: String,
+    subjects: Array(Subject),
+};
+
+type RelationshipMapping(AttributeId) = struct {
+    from_attribute: AttributeId,
+    to_attribute: AttributeId,
+};
+
+type RelationshipDef(EntityId, AttributeId, RelationshipId) = struct {
+    id: RelationshipId,
+    from: EntityId,
+    to: EntityId,
+    kind: RelationshipKind,
+    mapping: RelationshipMapping(AttributeId),
+};
+
+type Vocabulary(EntityId, AttributeId, RelationshipId) = struct {
+    entities: Array(EntityDef(EntityId)),
+    attributes: Array(AttributeDef(EntityId, AttributeId)),
+    relationships: Array(RelationshipDef(EntityId, AttributeId, RelationshipId)),
+};
+
+type EnterpriseKnowledge(EntityId, AttributeId, MeasureId, DimensionId, RelationshipId, GrainId, Subject) = struct {
+    revision: String,
+    grain_bases: Array(GrainBase(GrainId, EntityId)),
+    vocabulary: Vocabulary(EntityId, AttributeId, RelationshipId),
+    metrics: Array(MetricDef(EntityId, AttributeId, MeasureId, GrainId, Subject)),
+    dimensions: Array(DimensionDef(EntityId, AttributeId, DimensionId, GrainId, Subject)),
+    plan_profile: PlanProfile,
+};
+
+# ---------------- Typed lookups ----------------
+
+def find_entity: for(E) Fn(Array(EntityDef(E)), E) -> Option(EntityDef(E)) = fn(entities, id) {
+    array.find(entities, fn(e) { e.id == id })
+};
+
+def find_attribute: for(E, A) Fn(Array(AttributeDef(E, A)), A) -> Option(AttributeDef(E, A)) = fn(attrs, id) {
+    array.find(attrs, fn(a) { a.id == id })
+};
+
+def find_metric: for(E, A, M, G, S) Fn(Array(MetricDef(E, A, M, G, S)), M) -> Option(MetricDef(E, A, M, G, S)) = fn(metrics, id) {
+    array.find(metrics, fn(m) { m.id == id })
+};
+
+def find_dimension: for(E, A, D, G, S) Fn(Array(DimensionDef(E, A, D, G, S)), D) -> Option(DimensionDef(E, A, D, G, S)) = fn(dims, id) {
+    array.find(dims, fn(d) { d.id == id })
+};
+
+def subject_allowed: for(S) Fn(Array(S), S) -> Bool = fn(subjects, subject) {
+    array.any(subjects, fn(s) { s == subject })
+};
+
+# ---------------- Safe path search (BFS over the relationship catalog) ----------------
+# Bounded by DESIGN.md: max depth 8, stable against directed cycles, shortest path
+# first with lexicographically smallest catalog-index sequence as tie-break.
+
+type BfsState(E) = struct {
+    found: Option(Array(Int)),
+    next: Array(E),
+    next_paths: Array(Array(Int)),
+    reached: Array(E),
+};
+
+type PathResult = enum {
+    'Found(Array(Int)),
+    'FanOutOnly,
+    'Missing,
+    'Truncated,
+};
+
+def lex_lt_at: Fn(Array(Int), Array(Int), Int) -> Bool = fn(a, b, i) {
+    if i >= array.length(a) {
+        array.length(a) < array.length(b)
+    } else if i >= array.length(b) {
+        'False
+    } else if a[i] < b[i] {
+        'True
+    } else if a[i] > b[i] {
+        'False
+    } else {
+        lex_lt_at(a, b, i + 1)
+    }
+};
+
+def lex_lt: Fn(Array(Int), Array(Int)) -> Bool = fn(a, b) {
+    lex_lt_at(a, b, 0)
+};
+
+def replace_at: for(A) Fn(Array(A), Int, A) -> Array(A) = fn(items, pos, value) {
+    replace_at_rec(items, pos, value, 0, [])
+};
+
+def replace_at_rec: for(A) Fn(Array(A), Int, A, Int, Array(A)) -> Array(A) = fn(items, pos, value, i, acc) {
+    if i >= array.length(items) {
+        acc
+    } else if i == pos {
+        replace_at_rec(items, pos, value, i + 1, array.push(acc, value))
+    } else {
+        replace_at_rec(items, pos, value, i + 1, array.push(acc, items[i]))
+    }
+};
+
+def expand_entry: for(E, A, R)
+    Fn(Int, Array(E), Array(Array(Int)), Array(RelationshipDef(E, A, R)), E, Bool, BfsState(E)) -> BfsState(E)
+= fn(i, frontier, fpaths, rels, target, include_fan, state) {
+    if i >= array.length(frontier) {
+        state
+    } else {
+        let from = frontier[i];
+        let path = fpaths[i];
+        let state1 = expand_rels(from, path, 0, rels, target, include_fan, state);
+        expand_entry(i + 1, frontier, fpaths, rels, target, include_fan, state1)
+    }
+};
+
+def expand_rels: for(E, A, R)
+    Fn(E, Array(Int), Int, Array(RelationshipDef(E, A, R)), E, Bool, BfsState(E)) -> BfsState(E)
+= fn(from, path, j, rels, target, include_fan, state) {
+    if j >= array.length(rels) {
+        state
+    } else {
+        let rel = rels[j];
+        if rel.from == from && (rel.kind == 'Safe || include_fan) {
+            let to = rel.to;
+            let new_path = array.push(path, j);
+            if to == target {
+                let updated: BfsState(E) = match state.found {
+                    'None => {found: 'Some(new_path), next: state.next, next_paths: state.next_paths, reached: state.reached},
+                    'Some(best) => {
+                        if lex_lt(new_path, best) {
+                            {found: 'Some(new_path), next: state.next, next_paths: state.next_paths, reached: state.reached}
+                        } else {
+                            state
+                        }
+                    },
+                };
+                expand_rels(from, path, j + 1, rels, target, include_fan, updated)
+            } else {
+                let in_next = array.find(array.enumerate(state.next), fn(pair) { pair.1 == to });
+                let state2: BfsState(E) = match in_next {
+                    'Some(pair) => {
+                        let pos = pair.0;
+                        if lex_lt(new_path, state.next_paths[pos]) {
+                            {found: state.found, next: state.next, next_paths: replace_at(state.next_paths, pos, new_path), reached: state.reached}
+                        } else {
+                            state
+                        }
+                    },
+                    'None => {
+                        if array.any(state.reached, fn(e) { e == to }) {
+                            state
+                        } else {
+                            {found: state.found, next: array.push(state.next, to), next_paths: array.push(state.next_paths, new_path), reached: array.push(state.reached, to)}
+                        }
+                    },
+                };
+                expand_rels(from, path, j + 1, rels, target, include_fan, state2)
+            }
+        } else {
+            expand_rels(from, path, j + 1, rels, target, include_fan, state)
+        }
+    }
+};
+
+def expand_layer: for(E, A, R)
+    Fn(Int, Array(E), Array(Array(Int)), Array(E), Array(RelationshipDef(E, A, R)), E, Int, Bool) -> PathResult
+= fn(depth, frontier, fpaths, reached, rels, target, max_depth, include_fan) {
+    if depth >= max_depth {
+        if array.length(frontier) > 0 { 'Truncated } else { 'Missing }
+    } else {
+        let initial: BfsState(E) = {found: 'None, next: [], next_paths: [], reached: reached};
+        let state = expand_entry(0, frontier, fpaths, rels, target, include_fan, initial);
+        match state.found {
+            'Some(path) => 'Found(path),
+            'None => {
+                if array.length(state.next) == 0 {
+                    'Missing
+                } else {
+                    expand_layer(depth + 1, state.next, state.next_paths, state.reached, rels, target, max_depth, include_fan)
+                }
+            }
+        }
+    }
+};
+
+def find_path: for(E, A, R)
+    Fn(Array(RelationshipDef(E, A, R)), E, E, Int, Bool) -> PathResult
+= fn(rels, root, target, max_depth, include_fan) {
+    if root == target {
+        'Found([])
+    } else {
+        expand_layer(0, [root], [[]], [root], rels, target, max_depth, include_fan)
+    }
+};
+
+# Full reachability uses the union of safe and fan-out edges; the plan itself only
+# ever uses safe paths. A target is safe, fan-out-only, or missing; truncation only
+# when unvisited successors remain at the depth boundary.
+def classify_target: for(E, A, R)
+    Fn(Array(RelationshipDef(E, A, R)), E, E, Int) -> PathResult
+= fn(rels, root, target, max_depth) {
+    match find_path(rels, root, target, max_depth, 'False) {
+        'Found(path) => 'Found(path),
+        'Missing => {
+            match find_path(rels, root, target, max_depth, 'True) {
+                'Found(_) => 'FanOutOnly,
+                other => other,
+            }
+        },
+        'Truncated => 'Truncated,
+        'FanOutOnly => 'FanOutOnly,
+    }
+};
+
+def select_path: for(E, A, R, I, S)
+    Fn(Array(RelationshipDef(E, A, R)), E, E, I, S) -> Array(Int)
+= fn(rels, base, entity, id, subject) {
+    if entity == base {
+        []
+    } else {
+        match classify_target(rels, base, entity, 8) {
+            'Found(path) => path,
+            'FanOutOnly => fail!("enterprise-knowledge.unsafe-path: capability target reachable only via fan-out relationships", id, subject),
+            'Missing => fail!("enterprise-knowledge.missing-path: capability target not reachable from base entity", id, subject),
+            'Truncated => fail!("enterprise-knowledge.truncated-path: reachability hidden beyond depth limit 8", id, subject),
+        }
+    }
+};
+
+# Merge multiple target paths in request order; shared edges kept only on first
+# occurrence. Every path starts at the selected base entity, so the merged sequence
+# stays join-order valid (each join's left alias is already defined).
+def merge_paths: Fn(Array(Array(Int))) -> Array(Int) = fn(paths) {
+    let empty: Array(Int) = [];
+    array.fold(paths, empty, fn(acc, path) {
+        array.fold(path, acc, fn(acc2, edge) {
+            if array.any(acc2, fn(e) { e == edge }) { acc2 } else { array.push(acc2, edge) }
+        })
+    })
+};
+
+# ---------------- Expression lowering ----------------
+
+# Resolve an ExprNode against the entity alias and the attribute catalog,
+# producing a standard QueryBuilder Expr. Dynamic values stay typed Bound(Val).
+def lower_expr: for(E, A)
+    Fn(ExprNode, String, Array(AttributeDef(E, A))) -> Expr
+= fn(node, alias, attrs) {
+    let result: Expr = match node {
+        'Attribute(ref) => {
+            let attr = match array.get(attrs, ref.index) {
+                'Some(x) => x,
+                'None => fail!("enterprise-knowledge.invalid-knowledge: expression attribute index out of range", ref.index),
+            };
+            'Column({alias: alias, column: attr.column})
+        },
+        'Bound(v) => 'Bound(v),
+        'ScalarCall(call) => 'ScalarCall({
+            kind: call.kind,
+            args: array.map(call.args, fn(arg) { lower_expr(arg, alias, attrs) }),
+        }),
+    };
+    result
+};
+
+# ---------------- Request entry collection ----------------
+
+type MeasureEntry(E, A, M, G, S) = struct {
+    request: Request(M, S, G),
+    metric: MetricDef(E, A, M, G, S),
+};
+
+type MeasureAcc(E, A, M, G, S) = struct {
+    entries: Array(MeasureEntry(E, A, M, G, S)),
+    common: Option(G),
+};
+
+type DimensionEntry(E, A, D, G, S) = struct {
+    request: Request(D, S, G),
+    dimension: DimensionDef(E, A, D, G, S),
+};
+
+type DimensionAcc(E, A, D, G, S) = struct {
+    entries: Array(DimensionEntry(E, A, D, G, S)),
+    common: Option(G),
+};
+
+# Parse, authorize and grain-check each measure capability independently, in request
+# order; every measure request must share one grain.
+def collect_measures: for(E, A, M, D, R, G, S)
+    Fn(Array(Request(M, S, G)), EnterpriseKnowledge(E, A, M, D, R, G, S)) -> MeasureAcc(E, A, M, G, S)
+= fn(requests, knowledge) {
+    let initial: MeasureAcc(E, A, M, G, S) = {entries: [], common: 'None};
+    array.fold(requests, initial, fn(acc, req) {
+        let metric = match find_metric(knowledge.metrics, req.id) {
+            'Some(m) => m,
+            'None => fail!("enterprise-knowledge.missing-measure: measure capability not in catalog", req.id, req.subject),
+        };
+        if !subject_allowed(metric.subjects, req.subject) {
+            fail!("enterprise-knowledge.unauthorized-measure: subject not authorized for measure", req.id, req.subject)
+        } else if req.input != metric.grain {
+            fail!("enterprise-knowledge.measure-grain-conflict: requested grain differs from measure capability grain", req.id, req.subject, req.input)
+        } else {
+            let common = match acc.common {
+                'Some(g) => {
+                    if req.input != g {
+                        fail!("enterprise-knowledge.measure-grain-conflict: requested measures must share one grain", req.id, req.subject, req.input)
+                    } else {
+                        acc.common
+                    }
+                },
+                'None => 'Some(req.input),
+            };
+            {
+                entries: array.push(acc.entries, {request: req, metric: metric}),
+                common: common,
+            }
+        }
+    })
+};
+
+# Same for dimension capabilities; dimension grain must agree with the plan grain
+# (the common measure grain when measures exist).
+def collect_dimensions: for(E, A, M, D, R, G, S)
+    Fn(Array(Request(D, S, G)), EnterpriseKnowledge(E, A, M, D, R, G, S), Option(G)) -> DimensionAcc(E, A, D, G, S)
+= fn(requests, knowledge, measure_common) {
+    let initial: DimensionAcc(E, A, D, G, S) = {entries: [], common: measure_common};
+    array.fold(requests, initial, fn(acc, req) {
+        let dimension = match find_dimension(knowledge.dimensions, req.id) {
+            'Some(d) => d,
+            'None => fail!("enterprise-knowledge.missing-dimension: dimension capability not in catalog", req.id, req.subject),
+        };
+        if !subject_allowed(dimension.subjects, req.subject) {
+            fail!("enterprise-knowledge.unauthorized-dimension: subject not authorized for dimension", req.id, req.subject)
+        } else if req.input != dimension.grain {
+            fail!("enterprise-knowledge.dimension-grain-conflict: requested grain differs from dimension capability grain", req.id, req.subject, req.input)
+        } else {
+            let common = match acc.common {
+                'Some(g) => {
+                    if req.input != g {
+                        fail!("enterprise-knowledge.dimension-grain-conflict: requested dimensions must share the plan grain", req.id, req.subject, req.input)
+                    } else {
+                        acc.common
+                    }
+                },
+                'None => 'Some(req.input),
+            };
+            {
+                entries: array.push(acc.entries, {request: req, dimension: dimension}),
+                common: common,
+            }
+        }
+    })
+};
+
+# ---------------- Base resolution and paths ----------------
+
+# The plan's base data source is selected by the request's common grain. A missing
+# GrainBase entry for that grain fails the whole request.
+def resolve_base: for(E, G)
+    Fn(Array(GrainBase(G, E)), G, Array(EntityDef(E))) -> EntityDef(E)
+= fn(grain_bases, grain, entities) {
+    let base_id = match array.find(grain_bases, fn(gb) { gb.grain == grain }) {
+        'Some(gb) => gb.base,
+        'None => fail!("enterprise-knowledge.no-base-for-grain: no base data source declared for grain", grain),
+    };
+    match find_entity(entities, base_id) {
+        'Some(e) => e,
+        'None => fail!("enterprise-knowledge.invalid-knowledge: grain base entity missing from vocabulary", grain),
+    }
+};
+
+# For each capability, lower the capability's own entity path plus one safe path
+# per declared required entity (in `requires` order). Paths are merged later in
+# request order; a required entity equal to the base/main entity yields an empty
+# path and is naturally deduplicated.
+def plan_measure_paths: for(E, A, M, D, R, G, S)
+    Fn(Array(MeasureEntry(E, A, M, G, S)), E, Array(RelationshipDef(E, A, R))) -> Array(Array(Int))
+= fn(entries, base, rels) {
+    array.fold(entries, [], fn(acc, entry) {
+        let entity_path = select_path(rels, base, entry.metric.entity, entry.request.id, entry.request.subject);
+        let required_paths = array.map(entry.metric.requires, fn(req_entity) {
+            select_path(rels, base, req_entity, entry.request.id, entry.request.subject)
+        });
+        array.concat([acc, [entity_path], required_paths])
+    })
+};
+
+def plan_dimension_paths: for(E, A, M, D, R, G, S)
+    Fn(Array(DimensionEntry(E, A, D, G, S)), E, Array(RelationshipDef(E, A, R))) -> Array(Array(Int))
+= fn(entries, base, rels) {
+    array.fold(entries, [], fn(acc, entry) {
+        let entity_path = select_path(rels, base, entry.dimension.entity, entry.request.id, entry.request.subject);
+        let required_paths = array.map(entry.dimension.requires, fn(req_entity) {
+            select_path(rels, base, req_entity, entry.request.id, entry.request.subject)
+        });
+        array.concat([acc, [entity_path], required_paths])
+    })
+};
+
+# ---------------- Plan assembly ----------------
+
+# Alias of an entity in the plan: the base entity is "e0"; any other entity is
+# introduced at the position of the first edge whose target it is ("e{pos+1}").
+def entity_alias: for(E, A, R)
+    Fn(E, E, Array(Int), Array(RelationshipDef(E, A, R))) -> Option(String)
+= fn(base, entity, edges, rels) {
+    if entity == base {
+        'Some("e0")
+    } else {
+        let found = array.find(array.enumerate(edges), fn(pair) { rels[pair.1].to == entity });
+        match found {
+            'Some(pair) => 'Some(`e\{pair.0 + 1}`),
+            'None => 'None,
+        }
+    }
+};
+
+def build_joins: for(E, A, R)
+    Fn(Array(Int), E, Array(EntityDef(E)), Array(AttributeDef(E, A)), Array(RelationshipDef(E, A, R))) -> Array(Join)
+= fn(edges, base, entities, attrs, rels) {
+    array.map(edges, fn(edge_index) {
+        let rel = rels[edge_index];
+        let from_alias = match entity_alias(base, rel.from, edges, rels) {
+            'Some(a) => a,
+            'None => fail!("enterprise-knowledge.assembly: join from entity not on plan path", rel.id),
+        };
+        let to_alias = match entity_alias(base, rel.to, edges, rels) {
+            'Some(a) => a,
+            'None => fail!("enterprise-knowledge.assembly: join to entity not on plan path", rel.id),
+        };
+        let to_entity = match find_entity(entities, rel.to) {
+            'Some(e) => e,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: relationship to entity missing", rel.id),
+        };
+        let from_attr = match find_attribute(attrs, rel.mapping.from_attribute) {
+            'Some(a) => a,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: relationship from attribute missing", rel.id),
+        };
+        let to_attr = match find_attribute(attrs, rel.mapping.to_attribute) {
+            'Some(a) => a,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: relationship to attribute missing", rel.id),
+        };
+        {
+            kind: 'Inner,
+            source: {table: to_entity.table, alias: to_alias},
+            left: {alias: from_alias, column: from_attr.column},
+            right: {alias: to_alias, column: to_attr.column},
+        }
+    })
+};
+
+def build_measure_projections: for(E, A, M, D, R, G, S)
+    Fn(Array(MeasureEntry(E, A, M, G, S)), E, Array(Int), EnterpriseKnowledge(E, A, M, D, R, G, S)) -> Array(ProjectionItem)
+= fn(entries, base, edges, knowledge) {
+    array.map(entries, fn(entry) {
+        let metric = entry.metric;
+        let alias = match entity_alias(base, metric.entity, edges, knowledge.vocabulary.relationships) {
+            'Some(a) => a,
+            'None => fail!("enterprise-knowledge.assembly: measure entity not on plan path", metric.id),
+        };
+        {
+            expr: 'Aggregate({kind: metric.aggregate, arg: lower_expr(metric.expr, alias, knowledge.vocabulary.attributes)}),
+            alias: metric.alias,
+        }
+    })
+};
+
+def build_dimension_projections: for(E, A, M, D, R, G, S)
+    Fn(Array(DimensionEntry(E, A, D, G, S)), E, Array(Int), EnterpriseKnowledge(E, A, M, D, R, G, S)) -> Array(ProjectionItem)
+= fn(entries, base, edges, knowledge) {
+    array.map(entries, fn(entry) {
+        let dimension = entry.dimension;
+        let alias = match entity_alias(base, dimension.entity, edges, knowledge.vocabulary.relationships) {
+            'Some(a) => a,
+            'None => fail!("enterprise-knowledge.assembly: dimension entity not on plan path", dimension.id),
+        };
+        let finest = match array.get(dimension.levels, array.length(dimension.levels) - 1) {
+            'Some(e) => e,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: dimension has no levels", dimension.id),
+        };
+        {expr: lower_expr(finest, alias, knowledge.vocabulary.attributes), alias: dimension.alias}
+    })
+};
+
+def build_grouping: for(E, A, M, D, R, G, S)
+    Fn(Array(DimensionEntry(E, A, D, G, S)), E, Array(Int), EnterpriseKnowledge(E, A, M, D, R, G, S)) -> Array(Expr)
+= fn(entries, base, edges, knowledge) {
+    let empty: Array(Expr) = [];
+    array.fold(entries, empty, fn(acc, entry) {
+        let dimension = entry.dimension;
+        let alias = match entity_alias(base, dimension.entity, edges, knowledge.vocabulary.relationships) {
+            'Some(a) => a,
+            'None => fail!("enterprise-knowledge.assembly: dimension entity not on plan path", dimension.id),
+        };
+        array.fold(dimension.levels, acc, fn(acc2, level) {
+            let expr: Expr = lower_expr(level, alias, knowledge.vocabulary.attributes);
+            if array.any(acc2, fn(e) { e == expr }) {
+                acc2
+            } else {
+                array.push(acc2, expr)
+            }
+        })
+    })
+};
+
+# ---------------- Expression / knowledge validation ----------------
+# Runs once at make_query_creator construction so invalid knowledge fails early
+# with a clear diagnostic instead of surfacing deep inside plan assembly.
+
+def validate_expr: for(E, A)
+    Fn(ExprNode, E, Array(AttributeDef(E, A))) -> Bool
+= fn(node, entity, attrs) {
+    let ok: Bool = match node {
+        'Attribute(ref) => {
+            let attr = match array.get(attrs, ref.index) {
+                'Some(x) => x,
+                'None => fail!("enterprise-knowledge.invalid-knowledge: expression attribute index out of range", ref.index),
+            };
+            if attr.entity == entity {
+                'True
+            } else {
+                fail!("enterprise-knowledge.invalid-knowledge: expression attribute belongs to a different entity", attr.id)
+            }
+        },
+        'Bound(_) => 'True,
+        'ScalarCall(call) => {
+            let _check = array.fold(call.args, 0, fn(acc, arg) {
+                let _ok = validate_expr(arg, entity, attrs);
+                acc + 1
+            });
+            'True
+        }
+    };
+    ok
+};
+
+def validate_knowledge: for(E, A, M, D, R, G, S)
+    Fn(EnterpriseKnowledge(E, A, M, D, R, G, S)) -> Bool
+= fn(knowledge) {
+    let _check_grain_bases = array.fold(knowledge.grain_bases, 0, fn(acc, gb) {
+        let _e = match find_entity(knowledge.vocabulary.entities, gb.base) {
+            'Some(x) => x,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: grain base entity missing from vocabulary", gb.grain),
+        };
+        let count = array.fold(knowledge.grain_bases, 0, fn(acc2, other) {
+            if other.grain == gb.grain { acc2 + 1 } else { acc2 }
+        });
+        if count > 1 {
+            fail!("enterprise-knowledge.invalid-knowledge: duplicate grain base definition", gb.grain)
+        } else {
+            acc + 1
+        }
+    });
+    let _check_metrics = array.fold(knowledge.metrics, 0, fn(acc, metric) {
+        let _e = match find_entity(knowledge.vocabulary.entities, metric.entity) {
+            'Some(x) => x,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: measure entity missing", metric.id),
+        };
+        let _check_requires = array.fold(metric.requires, 0, fn(acc2, req_entity) {
+            let _r = match find_entity(knowledge.vocabulary.entities, req_entity) {
+                'Some(x) => x,
+                'None => fail!("enterprise-knowledge.invalid-knowledge: measure required entity missing from vocabulary", metric.id, req_entity),
+            };
+            acc2 + 1
+        });
+        let _expr_ok = validate_expr(metric.expr, metric.entity, knowledge.vocabulary.attributes);
+        if !valid_identifier(metric.alias) {
+            fail!("enterprise-knowledge.invalid-knowledge: measure alias is not a valid SQL identifier", metric.id)
+        } else {
+            acc + 1
+        }
+    });
+    let _check_dimensions = array.fold(knowledge.dimensions, 0, fn(acc, dimension) {
+        let _e = match find_entity(knowledge.vocabulary.entities, dimension.entity) {
+            'Some(x) => x,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: dimension entity missing", dimension.id),
+        };
+        let _check_requires = array.fold(dimension.requires, 0, fn(acc2, req_entity) {
+            let _r = match find_entity(knowledge.vocabulary.entities, req_entity) {
+                'Some(x) => x,
+                'None => fail!("enterprise-knowledge.invalid-knowledge: dimension required entity missing from vocabulary", dimension.id, req_entity),
+            };
+            acc2 + 1
+        });
+        if array.length(dimension.levels) == 0 {
+            fail!("enterprise-knowledge.invalid-knowledge: dimension has no levels", dimension.id)
+        } else if !valid_identifier(dimension.alias) {
+            fail!("enterprise-knowledge.invalid-knowledge: dimension alias is not a valid SQL identifier", dimension.id)
+        } else {
+            let _check_levels = array.fold(dimension.levels, 0, fn(acc2, level) {
+                let _level_ok = validate_expr(level, dimension.entity, knowledge.vocabulary.attributes);
+                acc2 + 1
+            });
+            acc + 1
+        }
+    });
+    let _check_relationships = array.fold(knowledge.vocabulary.relationships, 0, fn(acc, rel) {
+        let _from = match find_entity(knowledge.vocabulary.entities, rel.from) {
+            'Some(x) => x,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: relationship from entity missing", rel.id),
+        };
+        let _to = match find_entity(knowledge.vocabulary.entities, rel.to) {
+            'Some(x) => x,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: relationship to entity missing", rel.id),
+        };
+        let from_attr = match find_attribute(knowledge.vocabulary.attributes, rel.mapping.from_attribute) {
+            'Some(x) => x,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: relationship from attribute missing", rel.id),
+        };
+        let to_attr = match find_attribute(knowledge.vocabulary.attributes, rel.mapping.to_attribute) {
+            'Some(x) => x,
+            'None => fail!("enterprise-knowledge.invalid-knowledge: relationship to attribute missing", rel.id),
+        };
+        if from_attr.entity != rel.from {
+            fail!("enterprise-knowledge.invalid-knowledge: relationship from attribute belongs to a different entity", rel.id)
+        } else if to_attr.entity != rel.to {
+            fail!("enterprise-knowledge.invalid-knowledge: relationship to attribute belongs to a different entity", rel.id)
+        } else {
+            acc + 1
+        }
+    });
+    let aliases = array.concat([
+        array.map(knowledge.metrics, fn(m) { m.alias }),
+        array.map(knowledge.dimensions, fn(d) { d.alias }),
+    ]);
+    let _check_aliases = array.fold(aliases, 0, fn(acc, alias) {
+        let count = array.fold(aliases, 0, fn(acc2, other) {
+            if other == alias { acc2 + 1 } else { acc2 }
+        });
+        if count > 1 {
+            fail!("enterprise-knowledge.invalid-knowledge: duplicate projection alias", alias)
+        } else {
+            acc + 1
+        }
+    });
+    'True
+};
+
+# ---------------- Query creator ----------------
+
+# make_query_creator(knowledge) -> Fn(Request) -> Plan
+# Steps per DESIGN.md: parse and authorize each capability, validate measure grain
+# compatibility, resolve the base data source for the request's common grain, derive
+# entities and select safe relationships, assemble a standard Plan covering exactly
+# the requests, verify structure and profile, then publish.
+def make_query_creator: for(E, A, M, D, R, G, S)
+    Fn(EnterpriseKnowledge(E, A, M, D, R, G, S)) -> Fn(QueryRequest(M, D, S, G, G)) -> Plan
+= fn(knowledge) {
+    let _valid = validate_knowledge(knowledge);
+    fn(request) {
+        if array.length(request.measures) == 0 && array.length(request.dimensions) == 0 {
+            fail!("enterprise-knowledge.empty-request: request must name at least one measure or dimension")
+        } else {
+            let measure_acc = collect_measures(request.measures, knowledge);
+            let dimension_acc = collect_dimensions(request.dimensions, knowledge, measure_acc.common);
+            let plan_grain = match measure_acc.common {
+                'Some(g) => g,
+                'None => match dimension_acc.common {
+                    'Some(g) => g,
+                    'None => fail!("enterprise-knowledge.empty-request: request must name at least one measure or dimension"),
+                },
+            };
+            let base_entity = resolve_base(knowledge.grain_bases, plan_grain, knowledge.vocabulary.entities);
+            let base_id = base_entity.id;
+            let measure_paths = plan_measure_paths(measure_acc.entries, base_id, knowledge.vocabulary.relationships);
+            let dimension_paths = plan_dimension_paths(dimension_acc.entries, base_id, knowledge.vocabulary.relationships);
+            let paths = array.concat([measure_paths, dimension_paths]);
+            let edges = merge_paths(paths);
+            let joins = build_joins(edges, base_id, knowledge.vocabulary.entities, knowledge.vocabulary.attributes, knowledge.vocabulary.relationships);
+            let projections = array.concat([
+                build_measure_projections(measure_acc.entries, base_id, edges, knowledge),
+                build_dimension_projections(dimension_acc.entries, base_id, edges, knowledge),
+            ]);
+            let grouping = build_grouping(dimension_acc.entries, base_id, edges, knowledge);
+            let plan: Plan = {
+                revision: knowledge.revision,
+                source: {table: base_entity.table, alias: "e0"},
+                projection: projections,
+                filter: [],
+                joins: joins,
+                grouping: grouping,
+                ordering: [],
+                limit: 'None,
+            };
+            match validate_plan(plan) {
+                'Ok(_) => {
+                    if within_profile(plan, knowledge.plan_profile) {
+                        plan
+                    } else {
+                        fail!("enterprise-knowledge.profile-violation: plan uses capabilities outside knowledge.plan_profile", plan)
+                    }
+                },
+                'Err(message) => fail!("enterprise-knowledge.structure: plan failed QueryBuilder structure validation", plan, message),
+            }
+        }
+    }
+};
+
+export { EnterpriseKnowledge, EntityDef, AttributeDef, MetricDef, DimensionDef, RelationshipDef, RelationshipMapping, RelationshipKind, Vocabulary, GrainBase, AttributeRef, ExprCall, ExprNode, attribute_node, bound_node, scalar_node, Request, QueryRequest, make_query_creator };

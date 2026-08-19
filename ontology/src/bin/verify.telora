@@ -1,0 +1,144 @@
+# ontology/src/bin/verify.telora
+# Verification:
+#  1. request coverage: every requested measure/dimension has exactly one projection;
+#  2. structured derived dimension: 3-arg Substr lowers to projection AND grouping,
+#     with Bound constants entering Query bindings in deterministic order;
+#  3. relationship selection: canonical safe-path joins, shared edges kept once;
+#  4. required entities: safe paths are selected for the capability entity AND each
+#     declared required entity, merged in stable order (Package grain joins
+#     Package -> Order; PackageItem grain joins PackageItem -> Package -> Order);
+#  5. profile coverage: plan stays within knowledge.plan_profile;
+#  6. different grains resolve to different base data sources (not a single-base
+#     alias rewrite).
+
+import "std/array" as array;
+import "@src/fixtures.telora" {
+    knowledge, request_order, request_item, request_package, request_units,
+};
+import "@src/ontology.telora" { make_query_creator };
+import "query-builder/query-builder.telora" {
+    Plan, Query, Join, validate_plan, within_profile, transform_sqlite_with_profile,
+};
+
+let creator = make_query_creator(knowledge);
+let plan_order: Plan = creator(request_order);
+let plan_item: Plan = creator(request_item);
+let plan_package: Plan = creator(request_package);
+let plan_units: Plan = creator(request_units);
+let query_order: Query = transform_sqlite_with_profile(plan_order, knowledge.plan_profile);
+
+# ---- 1. request coverage: exactly one projection per requested capability ----
+let coverage_order_ok: Bool = array.length(plan_order.projection) == 3
+    && plan_order.projection[0].alias == "revenue"
+    && plan_order.projection[1].alias == "country"
+    && plan_order.projection[2].alias == "order_month";
+let coverage_item_ok: Bool = array.length(plan_item.projection) == 2
+    && plan_item.projection[0].alias == "item_count"
+    && plan_item.projection[1].alias == "category";
+let coverage_package_ok: Bool = array.length(plan_package.projection) == 1
+    && plan_package.projection[0].alias == "delivered_packages";
+let coverage_units_ok: Bool = array.length(plan_units.projection) == 1
+    && plan_units.projection[0].alias == "units_shipped";
+
+# ---- 2. structured derived dimension: substr in projection and grouping ----
+let j0: Join = plan_order.joins[0];
+let substr_projection_ok: Bool = match plan_order.projection[2].expr {
+    'ScalarCall(call) => call.kind == 'Substr && array.length(call.args) == 3,
+    _ => 'False,
+};
+let substr_grouping_ok: Bool = array.length(plan_order.grouping) == 2
+    && match plan_order.grouping[0] {
+        'Column(_) => 'True,
+        _ => 'False,
+    }
+    && match plan_order.grouping[1] {
+        'ScalarCall(call) => call.kind == 'Substr && array.length(call.args) == 3,
+        _ => 'False,
+    };
+# bindings order deterministic: projection substr (1, 7) then grouping substr (1, 7)
+let bindings_ok: Bool = array.length(query_order.bindings) == 4
+    && query_order.bindings[0] == 'Int(1)
+    && query_order.bindings[1] == 'Int(7)
+    && query_order.bindings[2] == 'Int(1)
+    && query_order.bindings[3] == 'Int(7);
+
+# ---- 3. relationship selection: canonical merged safe paths ----
+let selection_order_ok: Bool = array.length(plan_order.joins) == 1
+    && j0.source.table == "customers"
+    && j0.source.alias == "e1"
+    && j0.left.alias == "e0"
+    && j0.left.column == "customer_id"
+    && j0.right.alias == "e1"
+    && j0.right.column == "id";
+let selection_item_ok: Bool = array.length(plan_item.joins) == 1
+    && plan_item.joins[0].source.table == "products"
+    && plan_item.joins[0].source.alias == "e1"
+    && plan_item.joins[0].left.alias == "e0"
+    && plan_item.joins[0].left.column == "product_id"
+    && plan_item.joins[0].right.alias == "e1"
+    && plan_item.joins[0].right.column == "id";
+
+# ---- 4. required entities drive joins across grains ----
+# Package grain: DeliveredPackages lives on Package (base) and requires Order, so
+# the plan joins Package -> Order.
+let required_package_ok: Bool = array.length(plan_package.joins) == 1
+    && plan_package.source.table == "packages"
+    && plan_package.joins[0].source.table == "orders"
+    && plan_package.joins[0].source.alias == "e1"
+    && plan_package.joins[0].left.alias == "e0"
+    && plan_package.joins[0].left.column == "order_id"
+    && plan_package.joins[0].right.alias == "e1"
+    && plan_package.joins[0].right.column == "id";
+# PackageItem grain: UnitsShipped lives on PackageItem (base) and requires Package
+# then Order, so the plan joins PackageItem -> Package -> Order in order.
+let required_units_ok: Bool = array.length(plan_units.joins) == 2
+    && plan_units.source.table == "package_items"
+    && plan_units.joins[0].source.table == "packages"
+    && plan_units.joins[0].source.alias == "e1"
+    && plan_units.joins[0].left.alias == "e0"
+    && plan_units.joins[0].left.column == "package_id"
+    && plan_units.joins[0].right.alias == "e1"
+    && plan_units.joins[0].right.column == "id"
+    && plan_units.joins[1].source.table == "orders"
+    && plan_units.joins[1].source.alias == "e2"
+    && plan_units.joins[1].left.alias == "e1"
+    && plan_units.joins[1].left.column == "order_id"
+    && plan_units.joins[1].right.alias == "e2"
+    && plan_units.joins[1].right.column == "id";
+
+# ---- 5. profile coverage and structural validity ----
+let profile_order_ok: Bool = within_profile(plan_order, knowledge.plan_profile);
+let profile_item_ok: Bool = within_profile(plan_item, knowledge.plan_profile);
+let profile_package_ok: Bool = within_profile(plan_package, knowledge.plan_profile);
+let profile_units_ok: Bool = within_profile(plan_units, knowledge.plan_profile);
+let structure_ok: Bool = match validate_plan(plan_order) {
+    'Ok(_) => 'True,
+    'Err(_) => 'False,
+};
+
+# ---- 6. grains resolve to their declared bases ----
+let bases_differ: Bool = plan_order.source.table == "orders"
+    && plan_item.source.table == "package_items"
+    && plan_package.source.table == "packages";
+
+let all_ok: Bool = coverage_order_ok && coverage_item_ok && coverage_package_ok && coverage_units_ok
+    && substr_projection_ok && substr_grouping_ok && bindings_ok
+    && selection_order_ok && selection_item_ok
+    && required_package_ok && required_units_ok
+    && profile_order_ok && profile_item_ok && profile_package_ok && profile_units_ok
+    && structure_ok && bases_differ;
+let _check = if all_ok {
+    'True
+} else {
+    fail!("enterprise-knowledge.verify: verification failed", coverage_order_ok, coverage_item_ok, coverage_package_ok, coverage_units_ok, substr_projection_ok, substr_grouping_ok, bindings_ok, selection_order_ok, selection_item_ok, required_package_ok, required_units_ok, profile_order_ok, profile_item_ok, profile_package_ok, profile_units_ok, structure_ok, bases_differ)
+};
+
+export let plan_order_export: Plan = plan_order;
+export let plan_item_export: Plan = plan_item;
+export let plan_package_export: Plan = plan_package;
+export let plan_units_export: Plan = plan_units;
+export let output: String = `verify ok bases=\{plan_order.source.table},\{plan_package.source.table},\{plan_item.source.table} projections=\{array.length(plan_order.projection)},\{array.length(plan_item.projection)},\{array.length(plan_package.projection)},\{array.length(plan_units.projection)} joins=\{array.length(plan_order.joins)},\{array.length(plan_item.joins)},\{array.length(plan_package.joins)},\{array.length(plan_units.joins)} bindings=\{array.length(query_order.bindings)} required=\{
+    if required_package_ok && required_units_ok { "ok" } else { "bad" }
+} profile=\{
+    if profile_order_ok && profile_item_ok && profile_package_ok && profile_units_ok { "ok" } else { "bad" }
+} bases_differ=\{bases_differ}`;

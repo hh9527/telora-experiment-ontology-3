@@ -1,0 +1,187 @@
+# query-builder/src/bin/verify.telora
+#
+# 验证 profile 覆盖、算子收集、规范顺序与确定性。
+# 任何检查失败都会通过 fail! 产生 Host 诊断并使命令非零退出。
+
+import "std/array" as array;
+import "std/string" as string;
+import "@src/query-builder.telora" {
+    Plan,
+    Query,
+    PlanProfile,
+    OperatorSet,
+    Val,
+    AggregateFn,
+    ScalarFn,
+    JoinKind,
+    operators,
+    profile_covers,
+    within_profile,
+    validate_plan,
+    transform_sqlite,
+    transform_sqlite_with_profile,
+};
+
+def expect: Fn(Bool, String) -> Bool = fn(condition, label) {
+    if condition {
+        'True
+    } else {
+        fail!(`verify failed: \{label}`, condition)
+    }
+};
+
+# 一个使用全部能力类的合法 Plan（含三参数 Substr 的投影与分组）。
+let plan: Plan = {
+    revision: "logistics-ontology-v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {expr: 'Column({alias: "o", column: "region"}), alias: "region"},
+        {
+            expr: 'ScalarCall({
+                kind: 'Substr,
+                args: [
+                    'Column({alias: "o", column: "created_at"}),
+                    'Bound('Int(1)),
+                    'Bound('Int(7)),
+                ],
+            }),
+            alias: "month",
+        },
+        {
+            expr: 'ScalarCall({
+                kind: 'Round,
+                args: [
+                    'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+                    'Bound('Int(2)),
+                ],
+            }),
+            alias: "total",
+        },
+    ],
+    filter: [
+        'Compare({
+            op: 'Gt,
+            left: 'Column({alias: "o", column: "amount"}),
+            right: 'Bound('Int(500)),
+        }),
+    ],
+    joins: [
+        {
+            kind: 'Inner,
+            source: {table: "customers", alias: "c"},
+            left: {alias: "o", column: "customer_id"},
+            right: {alias: "c", column: "id"},
+        },
+    ],
+    grouping: [
+        'ScalarCall({
+            kind: 'Substr,
+            args: [
+                'Column({alias: "o", column: "created_at"}),
+                'Bound('Int(1)),
+                'Bound('Int(7)),
+            ],
+        }),
+    ],
+    ordering: [
+        {
+            expr: 'ScalarCall({
+                kind: 'Round,
+                args: [
+                    'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+                    'Bound('Int(2)),
+                ],
+            }),
+            direction: 'Desc,
+        },
+    ],
+    limit: 'Some(10),
+};
+
+# ---- 1. profile 覆盖 ----
+let permissive: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+
+let no_joins: PlanProfile = {
+    allow_joins: [],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+
+let no_sum: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+
+let no_substr: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+
+let check_permissive = expect(within_profile(plan, permissive), "permissive profile covers plan");
+let check_no_joins = expect(!within_profile(plan, no_joins), "no-joins profile rejects plan");
+let check_no_sum = expect(!within_profile(plan, no_sum), "no-sum profile rejects plan");
+let check_no_substr = expect(!within_profile(plan, no_substr), "no-substr profile rejects plan");
+let check_profile_covers = expect(profile_covers(operators(plan), permissive), "profile_covers agrees with within_profile");
+
+# ---- 2. 算子收集 ----
+let ops: OperatorSet = operators(plan);
+let expected_joins: Array(JoinKind) = ['Inner];
+let expected_aggregates: Array(AggregateFn) = ['Sum];
+let expected_scalars: Array(ScalarFn) = ['Substr, 'Round];
+let check_joins = expect(array.length(ops.joins) == 1 && ops.joins == expected_joins, "operators collects join kinds");
+let check_aggregates = expect(ops.aggregates == expected_aggregates, "operators collects aggregate functions");
+let check_scalars = expect(ops.scalars == expected_scalars, "operators collects scalar functions in first-use order");
+let check_flags = expect(ops.uses_filter && ops.uses_grouping && ops.uses_ordering && ops.uses_limit, "operators collects feature flags");
+
+# ---- 3. 结构验证与 revision ----
+let check_revision = expect(plan.revision == "logistics-ontology-v1", "plan revision is a stable readable string label");
+let check_validate_ok = match validate_plan(plan) {
+    'Ok(_) => 'True,
+    'Err(message) => fail!(`validate_plan rejected a valid plan: \{message}`, plan),
+};
+
+# ---- 4. 确定性 ----
+let q1: Query = transform_sqlite(plan);
+let q2: Query = transform_sqlite(plan);
+let check_sql_deterministic = expect(q1.sql == q2.sql, "sql byte-identical across runs");
+let check_bindings_deterministic = expect(q1.bindings == q2.bindings, "bindings identical across runs");
+let check_profile_path_deterministic = expect(transform_sqlite_with_profile(plan, permissive).sql == q1.sql, "profile path deterministic");
+
+# ---- 5. 规范顺序：逐字节固定 SQL 形状 ----
+let expected_sql = `SELECT "o"."region" AS "region", substr("o"."created_at", ?, ?) AS "month", round(SUM("o"."amount"), ?) AS "total" FROM "orders" AS "o" JOIN "customers" AS "c" ON "o"."customer_id" = "c"."id" WHERE ("o"."amount" > ?) GROUP BY substr("o"."created_at", ?, ?) ORDER BY round(SUM("o"."amount"), ?) DESC LIMIT ?`;
+let check_canonical_sql = expect(q1.sql == expected_sql, "sql matches canonical clause order");
+
+# ---- 6. bindings 与占位符一致 ----
+let placeholder_count = array.length(string.split(q1.sql, "?")) - 1;
+let check_bindings_count = expect(array.length(q1.bindings) == placeholder_count, "bindings count equals placeholder count");
+let expected_bindings: Array(Val) = ['Int(1), 'Int(7), 'Int(2), 'Int(500), 'Int(1), 'Int(7), 'Int(2), 'Int(10)];
+let check_bindings_order = expect(q1.bindings == expected_bindings, "bindings in canonical order");
+
+export let output: String = string.join_lines([
+    "verify: ok",
+    "checks: profile coverage, operator collection, structural validation, determinism, canonical order, bindings/placeholders, substr in projection and grouping",
+    `sql: \{q1.sql}`,
+    `bindings: \{placeholder_count}`,
+]);

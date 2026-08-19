@@ -1,0 +1,136 @@
+# query-builder/src/bin/main.telora
+#
+# 展示合法 Plan 到参数化 SQLite Query 的确定性具体化。
+# 覆盖教程五步能力：声明 PlanProfile、构造 Plan、验证 operators(plan) <= profile、
+# 确定具体化、判断失败来源。
+
+import "std/array" as array;
+import "std/fmt" as fmt;
+import "std/string" as string;
+import "@src/query-builder.telora" {
+    Val,
+    Plan,
+    Query,
+    PlanProfile,
+    OperatorSet,
+    operators,
+    within_profile,
+    transform_sqlite,
+    transform_sqlite_with_profile,
+};
+
+# 1. 声明接受的 PlanProfile（示例：允许全部标准算子）。
+let permissive: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+
+# 2. 使用标准算子构造 Plan：数据源、投影、标量调用、聚合、过滤、
+#    等值连接、分组、排序、限制。
+let plan: Plan = {
+    revision: "logistics-ontology-v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {expr: 'Column({alias: "o", column: "region"}), alias: "region"},
+        {
+            expr: 'ScalarCall({
+                kind: 'Substr,
+                args: [
+                    'Column({alias: "o", column: "created_at"}),
+                    'Bound('Int(1)),
+                    'Bound('Int(7)),
+                ],
+            }),
+            alias: "month",
+        },
+        {
+            expr: 'ScalarCall({
+                kind: 'Round,
+                args: [
+                    'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+                    'Bound('Int(2)),
+                ],
+            }),
+            alias: "total",
+        },
+    ],
+    filter: [
+        'Compare({
+            op: 'Gt,
+            left: 'Column({alias: "o", column: "amount"}),
+            right: 'Bound('Int(500)),
+        }),
+    ],
+    joins: [
+        {
+            kind: 'Inner,
+            source: {table: "customers", alias: "c"},
+            left: {alias: "o", column: "customer_id"},
+            right: {alias: "c", column: "id"},
+        },
+    ],
+    grouping: [
+        'ScalarCall({
+            kind: 'Substr,
+            args: [
+                'Column({alias: "o", column: "created_at"}),
+                'Bound('Int(1)),
+                'Bound('Int(7)),
+            ],
+        }),
+    ],
+    ordering: [
+        {
+            expr: 'ScalarCall({
+                kind: 'Round,
+                args: [
+                    'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+                    'Bound('Int(2)),
+                ],
+            }),
+            direction: 'Desc,
+        },
+    ],
+    limit: 'Some(10),
+};
+
+# 3. 验证 operators(plan) <= profile；revision 以 String 逐字节保留。
+let ops: OperatorSet = operators(plan);
+let covered: Bool = within_profile(plan, permissive);
+let revision_ok: Bool = plan.revision == "logistics-ontology-v1";
+
+# 4. 确定具体化为 SQLite Query。
+let query: Query = transform_sqlite(plan);
+let query_with_profile: Query = transform_sqlite_with_profile(plan, permissive);
+
+# 展示辅助函数。
+def show_val: Fn(Val) -> String = fn(val) {
+    match val {
+        'String(text) => `"\{text}"`,
+        'Int(number) => fmt.display(Int, number),
+        'Float(number) => fmt.display(Float, number),
+        'Bool(value) => match value {
+            'True => "true",
+            'False => "false",
+        },
+    }
+};
+
+def show_bindings: Fn(Array(Val)) -> String = fn(values) {
+    `[\{string.join(array.map(values, show_val), ", ")}]`
+};
+
+export let output: String = string.join_lines([
+    `plan revision: \{plan.revision}`,
+    `revision preserved: \{revision_ok}`,
+    `profile covers plan: \{covered}`,
+    `join operators used: \{array.length(ops.joins)}`,
+    `sql: \{query.sql}`,
+    `bindings: \{show_bindings(query.bindings)}`,
+    `bindings (profile path): \{show_bindings(query_with_profile.bindings)}`,
+]);

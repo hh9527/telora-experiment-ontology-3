@@ -1,0 +1,314 @@
+# Ent-1 私有物流履约分析模型（EnterpriseKnowledge）
+#
+# 依据 ent-1/DOMAIN.md 使用 ontology eDSL 表达封闭 vocabulary、领域事实、
+# 能力（指标/维度）、关系 mapping、GrainBase 与 PlanProfile，并实例化
+# EnterpriseKnowledge。本模块不包含 QueryBuilder/eDSL 私有实现。
+#
+# 领域最终计划 revision 标签：logistics-ontology-v1（领域侧字符串标签）；
+# EnterpriseKnowledge.revision 使用稳定 Int（QueryBuilder Plan.revision 类型）。
+
+import "ontology/ontology.telora" {
+    EnterpriseKnowledge, EntityDef, AttributeDef, MetricDef, DimensionDef,
+    RelationshipDef, RelationshipMapping, RelationshipKind, Vocabulary,
+    GrainBase, ExprNode, attribute_node, bound_node, scalar_node,
+};
+import "query-builder/query-builder.telora" {
+    PlanProfile,
+};
+
+# ---------------------------------------------------------------------------
+# 1. 封闭 vocabulary
+# ---------------------------------------------------------------------------
+
+type EntityId = enum {
+    'Order,
+    'Customer,
+    'Warehouse,
+    'Region,
+    'Carrier,
+    'ServiceLevel,
+    'Package,
+    'PackageItem,
+    'Product,
+    'Category,
+};
+
+type AttributeId = enum {
+    # Order
+    'OrderId,
+    'OrderCreatedAt,
+    'OrderCustomer,
+    'OrderWarehouse,
+    'OrderCarrier,
+    'OrderServiceLevel,
+    # Customer
+    'CustomerId,
+    'CustomerTier,
+    # Warehouse
+    'WarehouseId,
+    'WarehouseRegion,
+    # Region
+    'RegionId,
+    'RegionName,
+    # Carrier
+    'CarrierId,
+    'CarrierName,
+    # ServiceLevel
+    'ServiceLevelId,
+    'ServiceLevelName,
+    # Package
+    'PackageId,
+    'PackageOrder,
+    # PackageItem
+    'PackageItemId,
+    'PackageItemPackage,
+    'PackageItemProduct,
+    # Product
+    'ProductId,
+    'ProductCategory,
+    # Category
+    'CategoryId,
+    'CategoryName,
+};
+
+type MeasureId = enum {
+    'OrdersCreated,
+    'DeliveredPackages,
+    'UnitsShipped,
+};
+
+# 封闭 Dimension vocabulary：包含无获准 capability 的 'DeliveryException，
+# 使非法请求可在运行时被目录校验拒绝（missing-dimension）。
+type DimensionId = enum {
+    'OrderMonth,
+    'CustomerTier,
+    'OriginRegion,
+    'CarrierName,
+    'ServiceName,
+    'ProductCategory,
+    'DeliveryException,
+};
+
+type RelationshipId = enum {
+    'OrderToCustomer,
+    'OrderToWarehouse,
+    'WarehouseToRegion,
+    'OrderToCarrier,
+    'OrderToServiceLevel,
+    'PackageToOrder,
+    'PackageItemToPackage,
+    'PackageItemToProduct,
+    'ProductToCategory,
+    'OrderToPackage,
+    'PackageToPackageItem,
+};
+
+type GrainId = enum {
+    'Order,
+    'Package,
+    'PackageItem,
+};
+
+type Subject = enum {
+    'Analyst,
+};
+
+# ---------------------------------------------------------------------------
+# 2. 物理 catalog：实体、属性
+# ---------------------------------------------------------------------------
+
+let entities: Array(EntityDef(EntityId)) = [
+    {id: 'Order, table: "orders"},
+    {id: 'Customer, table: "customers"},
+    {id: 'Warehouse, table: "warehouses"},
+    {id: 'Region, table: "regions"},
+    {id: 'Carrier, table: "carriers"},
+    {id: 'ServiceLevel, table: "service_levels"},
+    {id: 'Package, table: "packages"},
+    {id: 'PackageItem, table: "package_items"},
+    {id: 'Product, table: "products"},
+    {id: 'Category, table: "categories"},
+];
+
+let attributes: Array(AttributeDef(EntityId, AttributeId)) = [
+    # Order
+    {id: 'OrderId, entity: 'Order, column: "id"},
+    {id: 'OrderCreatedAt, entity: 'Order, column: "created_at"},
+    {id: 'OrderCustomer, entity: 'Order, column: "customer_id"},
+    {id: 'OrderWarehouse, entity: 'Order, column: "warehouse_id"},
+    {id: 'OrderCarrier, entity: 'Order, column: "carrier_id"},
+    {id: 'OrderServiceLevel, entity: 'Order, column: "service_level_id"},
+    # Customer
+    {id: 'CustomerId, entity: 'Customer, column: "id"},
+    {id: 'CustomerTier, entity: 'Customer, column: "tier"},
+    # Warehouse
+    {id: 'WarehouseId, entity: 'Warehouse, column: "id"},
+    {id: 'WarehouseRegion, entity: 'Warehouse, column: "region_id"},
+    # Region
+    {id: 'RegionId, entity: 'Region, column: "id"},
+    {id: 'RegionName, entity: 'Region, column: "name"},
+    # Carrier
+    {id: 'CarrierId, entity: 'Carrier, column: "id"},
+    {id: 'CarrierName, entity: 'Carrier, column: "name"},
+    # ServiceLevel
+    {id: 'ServiceLevelId, entity: 'ServiceLevel, column: "id"},
+    {id: 'ServiceLevelName, entity: 'ServiceLevel, column: "name"},
+    # Package
+    {id: 'PackageId, entity: 'Package, column: "id"},
+    {id: 'PackageOrder, entity: 'Package, column: "order_id"},
+    # PackageItem
+    {id: 'PackageItemId, entity: 'PackageItem, column: "id"},
+    {id: 'PackageItemPackage, entity: 'PackageItem, column: "package_id"},
+    {id: 'PackageItemProduct, entity: 'PackageItem, column: "product_id"},
+    # Product
+    {id: 'ProductId, entity: 'Product, column: "id"},
+    {id: 'ProductCategory, entity: 'Product, column: "category_id"},
+    # Category
+    {id: 'CategoryId, entity: 'Category, column: "id"},
+    {id: 'CategoryName, entity: 'Category, column: "name"},
+];
+
+# ---------------------------------------------------------------------------
+# 3. 结构化物理表达式（ExprNode）
+# ---------------------------------------------------------------------------
+
+# order_month = substr(orders.created_at, 1, 7)（物理事实，Plan 自身可确定转 SQL）
+let order_month_expr: ExprNode = scalar_node('Substr, [
+    attribute_node(attributes, 'OrderCreatedAt),
+    bound_node('Int(1)),
+    bound_node('Int(7)),
+]);
+
+# ---------------------------------------------------------------------------
+# 4. 关系 catalog（Safe / FanOut + 结构化等值 mapping）
+# ---------------------------------------------------------------------------
+
+let relationships: Array(RelationshipDef(EntityId, AttributeId, RelationshipId)) = [
+    # 安全 many-to-one 方向（当前 grain 下不扩张）
+    {id: 'OrderToCustomer, from: 'Order, to: 'Customer, kind: 'Safe,
+     mapping: {from_attribute: 'OrderCustomer, to_attribute: 'CustomerId}},
+    {id: 'OrderToWarehouse, from: 'Order, to: 'Warehouse, kind: 'Safe,
+     mapping: {from_attribute: 'OrderWarehouse, to_attribute: 'WarehouseId}},
+    {id: 'WarehouseToRegion, from: 'Warehouse, to: 'Region, kind: 'Safe,
+     mapping: {from_attribute: 'WarehouseRegion, to_attribute: 'RegionId}},
+    {id: 'OrderToCarrier, from: 'Order, to: 'Carrier, kind: 'Safe,
+     mapping: {from_attribute: 'OrderCarrier, to_attribute: 'CarrierId}},
+    {id: 'OrderToServiceLevel, from: 'Order, to: 'ServiceLevel, kind: 'Safe,
+     mapping: {from_attribute: 'OrderServiceLevel, to_attribute: 'ServiceLevelId}},
+    {id: 'PackageToOrder, from: 'Package, to: 'Order, kind: 'Safe,
+     mapping: {from_attribute: 'PackageOrder, to_attribute: 'OrderId}},
+    {id: 'PackageItemToPackage, from: 'PackageItem, to: 'Package, kind: 'Safe,
+     mapping: {from_attribute: 'PackageItemPackage, to_attribute: 'PackageId}},
+    {id: 'PackageItemToProduct, from: 'PackageItem, to: 'Product, kind: 'Safe,
+     mapping: {from_attribute: 'PackageItemProduct, to_attribute: 'ProductId}},
+    {id: 'ProductToCategory, from: 'Product, to: 'Category, kind: 'Safe,
+     mapping: {from_attribute: 'ProductCategory, to_attribute: 'CategoryId}},
+    # 扩张 grain 的方向（只参与可达性分类）
+    {id: 'OrderToPackage, from: 'Order, to: 'Package, kind: 'FanOut,
+     mapping: {from_attribute: 'OrderId, to_attribute: 'PackageOrder}},
+    {id: 'PackageToPackageItem, from: 'Package, to: 'PackageItem, kind: 'FanOut,
+     mapping: {from_attribute: 'PackageId, to_attribute: 'PackageItemPackage}},
+];
+
+# ---------------------------------------------------------------------------
+# 5. 能力目录：指标（measure capability）
+# ---------------------------------------------------------------------------
+
+let metrics: Array(MetricDef(EntityId, AttributeId, MeasureId, GrainId, Subject)) = [
+    # Order grain：COUNT(orders.id)
+    {id: 'OrdersCreated, entity: 'Order, requires: [], aggregate: 'Count,
+     expr: attribute_node(attributes, 'OrderId), grain: 'Order,
+     alias: "orders_created", subjects: ['Analyst]},
+    # Package grain：获准，并要求 Order（requires 强制并入 Package->Order 路径）
+    {id: 'DeliveredPackages, entity: 'Package, requires: ['Order], aggregate: 'Count,
+     expr: attribute_node(attributes, 'PackageId), grain: 'Package,
+     alias: "delivered_packages", subjects: ['Analyst]},
+    # PackageItem grain：获准，并要求 Package 与 Order（requires 强制并入路径）
+    {id: 'UnitsShipped, entity: 'PackageItem, requires: ['Package, 'Order],
+     aggregate: 'Count,
+     expr: attribute_node(attributes, 'PackageItemId), grain: 'PackageItem,
+     alias: "units_shipped", subjects: ['Analyst]},
+];
+
+# ---------------------------------------------------------------------------
+# 6. 能力目录：维度（dimension capability）
+# ---------------------------------------------------------------------------
+
+let dimensions: Array(DimensionDef(EntityId, AttributeId, DimensionId, GrainId, Subject)) = [
+    # OrderMonth = substr(orders.created_at, 1, 7)；要求 Order（基础实体）
+    {id: 'OrderMonth, entity: 'Order, requires: [], levels: [order_month_expr],
+     grain: 'Order, alias: "order_month", subjects: ['Analyst]},
+    # CustomerTier = customers.tier；要求 Customer
+    {id: 'CustomerTier, entity: 'Customer, requires: [],
+     levels: [attribute_node(attributes, 'CustomerTier)],
+     grain: 'Order, alias: "customer_tier", subjects: ['Analyst]},
+    # OriginRegion = regions.name；要求 Region
+    {id: 'OriginRegion, entity: 'Region, requires: [],
+     levels: [attribute_node(attributes, 'RegionName)],
+     grain: 'Order, alias: "origin_region", subjects: ['Analyst]},
+    # CarrierName = carriers.name；要求 Carrier
+    {id: 'CarrierName, entity: 'Carrier, requires: [],
+     levels: [attribute_node(attributes, 'CarrierName)],
+     grain: 'Order, alias: "carrier_name", subjects: ['Analyst]},
+    # ServiceName = service_levels.name；要求 ServiceLevel
+    {id: 'ServiceName, entity: 'ServiceLevel, requires: [],
+     levels: [attribute_node(attributes, 'ServiceLevelName)],
+     grain: 'Order, alias: "service_name", subjects: ['Analyst]},
+    # ProductCategory：能力获准，但从 Order grain 只能经 fan-out 到达（无安全路径）
+    {id: 'ProductCategory, entity: 'Category, requires: [],
+     levels: [attribute_node(attributes, 'CategoryName)],
+     grain: 'Order, alias: "product_category", subjects: ['Analyst]},
+    # 'DeliveryException 属于封闭 vocabulary，但无获准 capability（不进入目录）
+];
+
+# ---------------------------------------------------------------------------
+# 7. grain base
+# ---------------------------------------------------------------------------
+
+let grain_bases: Array(GrainBase(GrainId, EntityId)) = [
+    {grain: 'Order, base: 'Order},
+    {grain: 'Package, base: 'Package},
+    {grain: 'PackageItem, base: 'PackageItem},
+];
+
+# ---------------------------------------------------------------------------
+# 8. PlanProfile（接受的 QueryBuilder 标准算子能力）
+# ---------------------------------------------------------------------------
+
+let plan_profile: PlanProfile = {
+    allow_joins: ['Inner],
+    allow_scalar: ['Substr],
+    allow_aggregate: ['Count],
+    allow_filter: 'False,
+    allow_grouping: 'True,
+    allow_ordering: 'False,
+    allow_limit: 'False,
+};
+
+# ---------------------------------------------------------------------------
+# 9. 领域 revision 标签（稳定、可读的 String；由 Plan 原样保留）
+# ---------------------------------------------------------------------------
+
+let logistics_ontology_revision = "logistics-ontology-v1";
+
+# ---------------------------------------------------------------------------
+# 10. 实例化的 EnterpriseKnowledge
+# ---------------------------------------------------------------------------
+
+let knowledge: EnterpriseKnowledge(EntityId, AttributeId, MeasureId, DimensionId, RelationshipId, GrainId, Subject) = {
+    revision: logistics_ontology_revision,
+    grain_bases: grain_bases,
+    vocabulary: {
+        entities: entities,
+        attributes: attributes,
+        relationships: relationships,
+    },
+    metrics: metrics,
+    dimensions: dimensions,
+    plan_profile: plan_profile,
+};
+
+export {
+    EntityId, AttributeId, MeasureId, DimensionId, RelationshipId, GrainId, Subject,
+    knowledge, plan_profile, logistics_ontology_revision,
+};

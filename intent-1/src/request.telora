@@ -1,0 +1,36 @@
+# 公共 typed Request 与公共 lower 调用（仅使用 ent-1 公共查询面）
+import "ent-1/query.telora" {
+    Request, lower, Query,
+};
+
+# 合法意图：统计已创建订单数，并按订单创建月份、客户等级、发货仓库所属地区分组。
+# 指标 OrdersCreated + 维度 OrderMonth / CustomerTier / OriginRegion，均以 Order 粒度。
+export let legal_request: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: 'Analyst, input: 'Order},
+        {id: 'CustomerTier, subject: 'Analyst, input: 'Order},
+        {id: 'OriginRegion, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+# 非法意图：统计已创建订单数，并按所含商品的商品类别分组。
+# ProductCategory 是公共词汇成员，但按 Order 粒度请求预期被拒绝（unsafe-path）。
+export let illegal_request: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'ProductCategory, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+export def lower_legal: Fn() -> Query = fn() {
+    lower(legal_request)
+};
+
+export def lower_illegal: Fn() -> Query = fn() {
+    lower(illegal_request)
+};

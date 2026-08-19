@@ -1,0 +1,19 @@
+# 公共类型与合法链路检查：合法意图可构造为 typed Request，并经公共 lower 得到 Query。
+import "ent-1/query.telora" { Request, lower, Query };
+
+let legal_request: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: 'Analyst, input: 'Order},
+        {id: 'CustomerTier, subject: 'Analyst, input: 'Order},
+        {id: 'OriginRegion, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+let lowered: Query = lower(legal_request);
+let sql_text: String = lowered.sql;
+let bindings = lowered.bindings;
+
+export { legal_request, lowered, sql_text, bindings };

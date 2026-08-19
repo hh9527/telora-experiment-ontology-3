@@ -1,0 +1,18 @@
+# 验证入口：重复 lowering 的 Query 严格相同，并验证公共结果契约。
+import "@src/request.telora" { legal_request, lower_legal };
+import "ent-1/query.telora" { Query };
+
+# 公共结果契约：Query = { sql: String, bindings: Array(Val) }；
+# 同一 Request 每次 lower 得到逐字节相同的 sql 与相同顺序的 bindings。
+def verify_contract: Fn() -> Bool = fn() {
+    let first: Query = lower_legal();
+    let second: Query = lower_legal();
+    first == second && first.sql != ""
+};
+
+export def output: String =
+    if verify_contract() {
+        "verify-ok"
+    } else {
+        fail!("lowering not deterministic or Query contract violated", legal_request)
+    };

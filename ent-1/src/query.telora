@@ -1,0 +1,30 @@
+# Ent-1 公共查询 facade
+#
+# 从同一份私有 EnterpriseKnowledge 形成公共查询面，只导出：
+#   - 业务 vocabulary（MeasureId / DimensionId / GrainId / Subject）；
+#   - 有类型 Request；
+#   - lower(Request) -> Query（Query 由 QueryBuilder 公共契约定义）。
+#
+# lowering 完全由私有 knowledge 捕获，不维护第二份领域知识；
+# 本模块不包含表名、列名、alias、join 路径/mapping、SQL 片段或模板。
+
+import "@src/model.telora" {
+    knowledge, plan_profile, MeasureId, DimensionId, Subject, GrainId,
+};
+import "ontology/ontology.telora" { QueryRequest, make_query_creator };
+import "query-builder/query-builder.telora" { Query, transform_sqlite_with_profile };
+
+# 公共有类型 Request：业务能力 id + subject + grain 输入。
+# 一次请求的所有项必须共享同一个 grain。
+type Request = QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId);
+
+# 公共 lowering：Request -> 规范 Plan -> 确定 SQLite Query。
+# 任一步失败都会原子失败，不发布部分结果。
+def lower: Fn(Request) -> Query = fn(request) {
+    transform_sqlite_with_profile(make_query_creator(knowledge)(request), plan_profile)
+};
+
+export {
+    MeasureId, DimensionId, GrainId, Subject,
+    Request, lower, Query,
+};

@@ -1,0 +1,14 @@
+# ontology/src/bin/invalid-grain.telora
+# A request whose common grain has no declared GrainBase must fail and publish
+# nothing. knowledge_no_base only declares OrderGrain; the ItemGrain request has
+# no base data source. Run with --best-effort to surface the diagnostics.
+
+import "@src/fixtures.telora" { knowledge_no_base, request_item };
+import "@src/ontology.telora" { make_query_creator };
+import "query-builder/query-builder.telora" { Plan };
+
+let creator = make_query_creator(knowledge_no_base);
+let plan: Plan = creator(request_item);
+
+# Reaching this line would mean a missing base still produced a trusted Plan.
+export let output: String = `unexpected success: published plan revision \{plan.revision}`;

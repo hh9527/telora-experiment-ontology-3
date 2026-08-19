@@ -1,0 +1,70 @@
+# Ent-1 公共查询面契约检查（开发期分析入口）
+#
+# 断言公共 facade：
+#   - 可加载（lower 可调用）；
+#   - lowering 确定（同一 Request 两次 lower 得到相同 Query）；
+#   - 结果可编码（Query 可经 codec 稳定编码）；
+#   - 多个 grain 的通用 typed Request 均可用。
+#
+# 用法：./bin/telora check @test/query-surface.telora -C ent-1
+
+import "@src/query.telora" {
+    Request, lower, MeasureId, DimensionId, Subject, GrainId,
+};
+import "query-builder/query-builder.telora" { Query };
+import "std/codec" as codec;
+import "std/value" { Value };
+import "std/array" as array;
+
+def require: Fn(Bool, String) -> Bool = fn(cond, label) {
+    if cond { 'True } else { fail!(`query-surface contract failed: \{label}`, cond) }
+};
+
+def encodable: Fn(Query) -> Bool = fn(query) {
+    match codec.encode(Value, query) {
+        'Ok(_) => 'True,
+        'Err(_) => 'False,
+    }
+};
+
+# 通用请求 A：Order grain
+let request_a: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+# 通用请求 B：Package grain
+let request_b: Request = {
+    measures: [
+        {id: 'DeliveredPackages, subject: 'Analyst, input: 'Package},
+    ],
+    dimensions: [],
+};
+
+# 通用请求 C：PackageItem grain
+let request_c: Request = {
+    measures: [
+        {id: 'UnitsShipped, subject: 'Analyst, input: 'PackageItem},
+    ],
+    dimensions: [],
+};
+
+let query_a: Query = lower(request_a);
+let c_a_det = require(lower(request_a) == query_a, "deterministic (A)");
+let c_a_enc = require(encodable(query_a), "encodable (A)");
+
+let query_b: Query = lower(request_b);
+let c_b_det = require(lower(request_b) == query_b, "deterministic (B)");
+let c_b_enc = require(encodable(query_b), "encodable (B)");
+
+let query_c: Query = lower(request_c);
+let c_c_det = require(lower(request_c) == query_c, "deterministic (C)");
+let c_c_enc = require(encodable(query_c), "encodable (C)");
+
+let c_shape = require(array.length(query_a.bindings) == 4, "substr constants in bindings (A)");
+
+export let output = "query-surface contract ok: facade loads; lowering deterministic and encodable across grains";

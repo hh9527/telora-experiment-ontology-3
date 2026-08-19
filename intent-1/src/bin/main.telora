@@ -1,0 +1,12 @@
+# 合法意图入口：统计已创建订单数，并按订单创建月份、客户等级、发货仓库所属地区分组。
+import "@src/request.telora" { lower_legal };
+import "std/codec" as codec;
+import "std/json" as json;
+import "std/result" as result;
+import "std/value" { Value };
+
+def lowered_query = fn() {
+    codec.encode(Value, lower_legal()) |> result.unwrap
+};
+
+export def output: String = json.stringify(lowered_query());

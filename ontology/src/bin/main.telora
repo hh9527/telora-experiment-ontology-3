@@ -1,0 +1,18 @@
+# ontology/src/bin/main.telora
+# Success example: fictional enterprise knowledge -> Request -> Plan, then the
+# public QueryBuilder SQLite transform for an end-to-end Query.
+
+import "@src/fixtures.telora" { knowledge, request_order };
+import "@src/ontology.telora" { make_query_creator };
+import "query-builder/query-builder.telora" {
+    Plan, Query, within_profile, transform_sqlite_with_profile,
+};
+
+let creator = make_query_creator(knowledge);
+let plan: Plan = creator(request_order);
+let query: Query = transform_sqlite_with_profile(plan, knowledge.plan_profile);
+let profile_ok: Bool = within_profile(plan, knowledge.plan_profile);
+
+export let plan_export: Plan = plan;
+export let query_export: Query = query;
+export let output: String = `profile_ok=\{profile_ok} sql=\{query.sql}`;

@@ -1,0 +1,235 @@
+# ontology/src/fixtures.telora
+# Fictional retail-catalog fixtures shared by the example binaries and tests.
+# This module is crate-internal (@src/... import); enterprise consumers import the
+# eDSL itself as "ontology/ontology.telora".
+
+import "query-builder/query-builder.telora" { PlanProfile };
+import "@src/ontology.telora" {
+    EnterpriseKnowledge, EntityDef, AttributeDef, MetricDef, DimensionDef,
+    RelationshipDef, RelationshipMapping, RelationshipKind, Vocabulary,
+    GrainBase, QueryRequest, ExprNode, attribute_node, bound_node, scalar_node,
+};
+
+type EntityId = enum { 'Order, 'Package, 'PackageItem, 'Customer, 'Product, 'Campaign };
+type AttributeId = enum {
+    'OrderId, 'OrderAmount, 'OrderRegion, 'OrderCreatedAt, 'OrderCustomer,
+    'OrderPackageItem, 'OrderProduct, 'OrderCampaign,
+    'PackageId, 'PackageOrder, 'PackageStatus,
+    'PackageItemId, 'PackageItemAmount, 'PackageItemCreatedAt, 'PackageItemPackage, 'PackageItemProduct,
+    'CustomerId, 'CustomerCountry,
+    'ProductId, 'ProductCategory,
+    'CampaignId, 'CampaignName,
+};
+type MeasureId = enum { 'Revenue, 'ItemCount, 'DeliveredPackages, 'UnitsShipped };
+type DimensionId = enum { 'RegionDim, 'CountryDim, 'OrderMonthDim, 'CategoryDim, 'CampaignDim };
+type RelationshipId = enum {
+    'OrderToCustomer, 'OrderToPackageItem, 'OrderToProduct,
+    'PackageItemToPackage, 'PackageToOrder, 'PackageItemToProduct,
+    'OrderToCampaign,
+};
+type GrainId = enum { 'OrderGrain, 'PackageGrain, 'ItemGrain };
+type Subject = enum { 'Analyst, 'Manager, 'Auditor };
+
+let entities: Array(EntityDef(EntityId)) = [
+    {id: 'Order, table: "orders"},
+    {id: 'Package, table: "packages"},
+    {id: 'PackageItem, table: "package_items"},
+    {id: 'Customer, table: "customers"},
+    {id: 'Product, table: "products"},
+    {id: 'Campaign, table: "campaigns"},
+];
+
+let attrs: Array(AttributeDef(EntityId, AttributeId)) = [
+    {id: 'OrderId, entity: 'Order, column: "id"},
+    {id: 'OrderAmount, entity: 'Order, column: "amount"},
+    {id: 'OrderRegion, entity: 'Order, column: "region"},
+    {id: 'OrderCreatedAt, entity: 'Order, column: "created_at"},
+    {id: 'OrderCustomer, entity: 'Order, column: "customer_id"},
+    {id: 'OrderPackageItem, entity: 'Order, column: "package_item_id"},
+    {id: 'OrderProduct, entity: 'Order, column: "product_id"},
+    {id: 'OrderCampaign, entity: 'Order, column: "campaign_id"},
+    {id: 'PackageId, entity: 'Package, column: "id"},
+    {id: 'PackageOrder, entity: 'Package, column: "order_id"},
+    {id: 'PackageStatus, entity: 'Package, column: "status"},
+    {id: 'PackageItemId, entity: 'PackageItem, column: "id"},
+    {id: 'PackageItemAmount, entity: 'PackageItem, column: "amount"},
+    {id: 'PackageItemCreatedAt, entity: 'PackageItem, column: "created_at"},
+    {id: 'PackageItemPackage, entity: 'PackageItem, column: "package_id"},
+    {id: 'PackageItemProduct, entity: 'PackageItem, column: "product_id"},
+    {id: 'CustomerId, entity: 'Customer, column: "id"},
+    {id: 'CustomerCountry, entity: 'Customer, column: "country"},
+    {id: 'ProductId, entity: 'Product, column: "id"},
+    {id: 'ProductCategory, entity: 'Product, column: "category"},
+    {id: 'CampaignId, entity: 'Campaign, column: "id"},
+    {id: 'CampaignName, entity: 'Campaign, column: "name"},
+];
+
+# order_month = substr(orders.created_at, 1, 7): a derived dimension expression.
+let order_month_expr: ExprNode = scalar_node('Substr, [
+    attribute_node(attrs, 'OrderCreatedAt),
+    bound_node('Int(1)),
+    bound_node('Int(7)),
+]);
+
+let rels: Array(RelationshipDef(EntityId, AttributeId, RelationshipId)) = [
+    {id: 'OrderToCustomer, from: 'Order, to: 'Customer, kind: 'Safe, mapping: {from_attribute: 'OrderCustomer, to_attribute: 'CustomerId}},
+    {id: 'OrderToPackageItem, from: 'Order, to: 'PackageItem, kind: 'Safe, mapping: {from_attribute: 'OrderPackageItem, to_attribute: 'PackageItemId}},
+    {id: 'OrderToProduct, from: 'Order, to: 'Product, kind: 'Safe, mapping: {from_attribute: 'OrderProduct, to_attribute: 'ProductId}},
+    {id: 'PackageItemToPackage, from: 'PackageItem, to: 'Package, kind: 'Safe, mapping: {from_attribute: 'PackageItemPackage, to_attribute: 'PackageId}},
+    {id: 'PackageToOrder, from: 'Package, to: 'Order, kind: 'Safe, mapping: {from_attribute: 'PackageOrder, to_attribute: 'OrderId}},
+    {id: 'PackageItemToProduct, from: 'PackageItem, to: 'Product, kind: 'Safe, mapping: {from_attribute: 'PackageItemProduct, to_attribute: 'ProductId}},
+    {id: 'OrderToCampaign, from: 'Order, to: 'Campaign, kind: 'FanOut, mapping: {from_attribute: 'OrderCampaign, to_attribute: 'CampaignId}},
+];
+
+let metrics: Array(MetricDef(EntityId, AttributeId, MeasureId, GrainId, Subject)) = [
+    {id: 'Revenue, entity: 'Order, requires: [], aggregate: 'Sum, expr: attribute_node(attrs, 'OrderAmount), grain: 'OrderGrain, alias: "revenue", subjects: ['Analyst, 'Manager]},
+    {id: 'ItemCount, entity: 'PackageItem, requires: [], aggregate: 'Count, expr: attribute_node(attrs, 'PackageItemId), grain: 'ItemGrain, alias: "item_count", subjects: ['Analyst]},
+    {id: 'DeliveredPackages, entity: 'Package, requires: ['Order], aggregate: 'Count, expr: attribute_node(attrs, 'PackageId), grain: 'PackageGrain, alias: "delivered_packages", subjects: ['Analyst, 'Manager]},
+    {id: 'UnitsShipped, entity: 'PackageItem, requires: ['Package, 'Order], aggregate: 'Sum, expr: attribute_node(attrs, 'PackageItemAmount), grain: 'ItemGrain, alias: "units_shipped", subjects: ['Analyst]},
+];
+
+let dimensions: Array(DimensionDef(EntityId, AttributeId, DimensionId, GrainId, Subject)) = [
+    {id: 'RegionDim, entity: 'Order, requires: [], levels: [attribute_node(attrs, 'OrderRegion)], grain: 'OrderGrain, alias: "region", subjects: ['Analyst, 'Manager]},
+    {id: 'CountryDim, entity: 'Customer, requires: [], levels: [attribute_node(attrs, 'CustomerCountry)], grain: 'OrderGrain, alias: "country", subjects: ['Analyst]},
+    {id: 'OrderMonthDim, entity: 'Order, requires: [], levels: [order_month_expr], grain: 'OrderGrain, alias: "order_month", subjects: ['Analyst]},
+    {id: 'CategoryDim, entity: 'Product, requires: [], levels: [attribute_node(attrs, 'ProductCategory)], grain: 'ItemGrain, alias: "category", subjects: ['Manager]},
+    {id: 'CampaignDim, entity: 'Campaign, requires: [], levels: [attribute_node(attrs, 'CampaignName)], grain: 'OrderGrain, alias: "campaign", subjects: ['Manager]},
+];
+
+let profile_permissive: PlanProfile = {
+    allow_joins: ['Inner],
+    allow_scalar: ['Substr],
+    allow_aggregate: ['Sum, 'Count],
+    allow_filter: 'False,
+    allow_grouping: 'True,
+    allow_ordering: 'False,
+    allow_limit: 'False,
+};
+
+let profile_no_substr: PlanProfile = {
+    allow_joins: ['Inner],
+    allow_scalar: [],
+    allow_aggregate: ['Sum, 'Count],
+    allow_filter: 'False,
+    allow_grouping: 'True,
+    allow_ordering: 'False,
+    allow_limit: 'False,
+};
+
+def with_profile: for(E, A, M, D, R, G, S)
+    Fn(EnterpriseKnowledge(E, A, M, D, R, G, S), PlanProfile) -> EnterpriseKnowledge(E, A, M, D, R, G, S)
+= fn(k, profile) {
+    {
+        revision: k.revision,
+        grain_bases: k.grain_bases,
+        vocabulary: k.vocabulary,
+        metrics: k.metrics,
+        dimensions: k.dimensions,
+        plan_profile: profile,
+    }
+};
+
+def with_grain_bases: for(E, A, M, D, R, G, S)
+    Fn(EnterpriseKnowledge(E, A, M, D, R, G, S), Array(GrainBase(G, E))) -> EnterpriseKnowledge(E, A, M, D, R, G, S)
+= fn(k, bases) {
+    {
+        revision: k.revision,
+        grain_bases: bases,
+        vocabulary: k.vocabulary,
+        metrics: k.metrics,
+        dimensions: k.dimensions,
+        plan_profile: k.plan_profile,
+    }
+};
+
+def with_metrics: for(E, A, M, D, R, G, S)
+    Fn(EnterpriseKnowledge(E, A, M, D, R, G, S), Array(MetricDef(E, A, M, G, S))) -> EnterpriseKnowledge(E, A, M, D, R, G, S)
+= fn(k, new_metrics) {
+    {
+        revision: k.revision,
+        grain_bases: k.grain_bases,
+        vocabulary: k.vocabulary,
+        metrics: new_metrics,
+        dimensions: k.dimensions,
+        plan_profile: k.plan_profile,
+    }
+};
+
+let knowledge: EnterpriseKnowledge(EntityId, AttributeId, MeasureId, DimensionId, RelationshipId, GrainId, Subject) = {
+    revision: "retail-catalog-v8",
+    grain_bases: [
+        {grain: 'OrderGrain, base: 'Order},
+        {grain: 'PackageGrain, base: 'Package},
+        {grain: 'ItemGrain, base: 'PackageItem},
+    ],
+    vocabulary: {
+        entities: entities,
+        attributes: attrs,
+        relationships: rels,
+    },
+    metrics: metrics,
+    dimensions: dimensions,
+    plan_profile: profile_permissive,
+};
+
+let knowledge_no_substr = with_profile(knowledge, profile_no_substr);
+let knowledge_no_base = with_grain_bases(knowledge, [{grain: 'OrderGrain, base: 'Order}]);
+let bad_metrics: Array(MetricDef(EntityId, AttributeId, MeasureId, GrainId, Subject)) = [
+    {id: 'Revenue, entity: 'Order, requires: [], aggregate: 'Sum, expr: scalar_node('Lower, [attribute_node(attrs, 'CustomerCountry)]), grain: 'OrderGrain, alias: "revenue", subjects: ['Analyst, 'Manager]},
+];
+let knowledge_bad_expr = with_metrics(knowledge, bad_metrics);
+
+let request_order: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'Revenue, subject: 'Analyst, input: 'OrderGrain},
+    ],
+    dimensions: [
+        {id: 'CountryDim, subject: 'Analyst, input: 'OrderGrain},
+        {id: 'OrderMonthDim, subject: 'Analyst, input: 'OrderGrain},
+    ],
+};
+
+let request_item: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'ItemCount, subject: 'Analyst, input: 'ItemGrain},
+    ],
+    dimensions: [
+        {id: 'CategoryDim, subject: 'Manager, input: 'ItemGrain},
+    ],
+};
+
+# Cross-grain: Package grain plan starts from packages and joins Package -> Order.
+let request_package: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'DeliveredPackages, subject: 'Analyst, input: 'PackageGrain},
+    ],
+    dimensions: [],
+};
+
+# Cross-grain: PackageItem grain plan starts from package_items and joins
+# PackageItem -> Package -> Order in order (required entities Package, Order).
+let request_units: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'UnitsShipped, subject: 'Analyst, input: 'ItemGrain},
+    ],
+    dimensions: [],
+};
+
+let request_conflict: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'Revenue, subject: 'Analyst, input: 'OrderGrain},
+        {id: 'ItemCount, subject: 'Analyst, input: 'ItemGrain},
+    ],
+    dimensions: [],
+};
+
+let request_fanout: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'Revenue, subject: 'Analyst, input: 'OrderGrain},
+    ],
+    dimensions: [
+        {id: 'CampaignDim, subject: 'Manager, input: 'OrderGrain},
+    ],
+};
+
+export { EntityId, AttributeId, MeasureId, DimensionId, RelationshipId, GrainId, Subject, knowledge, knowledge_no_substr, knowledge_no_base, knowledge_bad_expr, profile_permissive, profile_no_substr, request_order, request_item, request_package, request_units, request_conflict, request_fanout };

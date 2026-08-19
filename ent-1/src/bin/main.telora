@@ -1,0 +1,42 @@
+# Ent-1 合法入口：OrdersCreated 按五个维度分组
+#
+# 合法场景（ent-1/DOMAIN.md）：`OrdersCreated`，按 `OrderMonth`、`CustomerTier`、
+# `OriginRegion`、`CarrierName` 与 `ServiceName` 分组。发布 Order grain 的只读
+# 规范 Plan，并把它确定具体化为 SQLite Query。
+#
+# plan  = make_query_creator(knowledge)(request)
+# query = query_builder.transform(plan)
+
+import "@src/model.telora" {
+    knowledge, plan_profile, MeasureId, DimensionId, Subject, GrainId,
+};
+import "ontology/ontology.telora" { QueryRequest, make_query_creator };
+import "query-builder/query-builder.telora" {
+    Plan, Query, transform_sqlite_with_profile,
+};
+import "std/codec" as codec;
+import "std/json" as json;
+import "std/value" { Value };
+import "std/result" as result;
+
+let legal_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: 'Analyst, input: 'Order},
+        {id: 'CustomerTier, subject: 'Analyst, input: 'Order},
+        {id: 'OriginRegion, subject: 'Analyst, input: 'Order},
+        {id: 'CarrierName, subject: 'Analyst, input: 'Order},
+        {id: 'ServiceName, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+let creator = make_query_creator(knowledge);
+let plan: Plan = creator(legal_request);
+let query: Query = transform_sqlite_with_profile(plan, plan_profile);
+
+let plan_json = codec.encode(Value, plan) |> result.unwrap |> json.stringify;
+let query_json = codec.encode(Value, query) |> result.unwrap |> json.stringify;
+
+export let output = `plan=\{plan_json}\nquery=\{query_json}`;

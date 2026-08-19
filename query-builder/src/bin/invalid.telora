@@ -1,0 +1,233 @@
+# query-builder/src/bin/invalid.telora
+#
+# 展示越界或非法 Plan 产生 Host 诊断且无 Query。
+# 本入口有意失败：每个 attempt 触发一次 fail!，--best-effort 下
+# 全部独立诊断被保留，最终 output 不被发布，命令非零退出。
+
+import "@src/query-builder.telora" {
+    Plan,
+    PlanProfile,
+    transform_sqlite,
+    transform_sqlite_with_profile,
+};
+
+# ---- 结构非法：引用未定义 alias ----
+let undefined_alias: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "missing", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_undefined_alias = transform_sqlite(undefined_alias);
+
+# ---- 结构非法：非法表标识符 ----
+let bad_table: Plan = {
+    revision: "v1",
+    source: {table: "my table", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_bad_table = transform_sqlite(bad_table);
+
+# ---- 结构非法：投影别名重复 ----
+let duplicate_alias: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {expr: 'Column({alias: "o", column: "id"}), alias: "x"},
+        {expr: 'Column({alias: "o", column: "name"}), alias: "x"},
+    ],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_duplicate_alias = transform_sqlite(duplicate_alias);
+
+# ---- 结构非法：filter 中出现聚合 ----
+let aggregate_in_filter: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [
+        'Compare({
+            op: 'Gt,
+            left: 'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+            right: 'Bound('Int(100)),
+        }),
+    ],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_aggregate_in_filter = transform_sqlite(aggregate_in_filter);
+
+# ---- 结构非法：负数 limit ----
+let negative_limit: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'Some(-1),
+};
+let attempt_negative_limit = transform_sqlite(negative_limit);
+
+# ---- 结构非法：join right 未引用 join source alias ----
+let bad_join: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [
+        {
+            kind: 'Inner,
+            source: {table: "customers", alias: "c"},
+            left: {alias: "o", column: "customer_id"},
+            right: {alias: "o", column: "id"},
+        },
+    ],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_bad_join = transform_sqlite(bad_join);
+
+# ---- profile 越界：profile 不允许 join ----
+let no_join_profile: PlanProfile = {
+    allow_joins: [],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+let join_plan: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [
+        {
+            kind: 'Left,
+            source: {table: "customers", alias: "c"},
+            left: {alias: "o", column: "customer_id"},
+            right: {alias: "c", column: "id"},
+        },
+    ],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_profile_join = transform_sqlite_with_profile(join_plan, no_join_profile);
+
+# ---- profile 越界：profile 不允许 Sum 聚合 ----
+let no_sum_profile: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce, 'Substr],
+    allow_aggregate: ['Count, 'CountDistinct, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+let sum_plan: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {
+            expr: 'Aggregate({kind: 'Sum, arg: 'Column({alias: "o", column: "amount"})}),
+            alias: "total",
+        },
+    ],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_profile_sum = transform_sqlite_with_profile(sum_plan, no_sum_profile);
+
+# ---- 结构非法：Substr arity 越界（1 个参数） ----
+let bad_substr_arity: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {
+            expr: 'ScalarCall({
+                kind: 'Substr,
+                args: ['Column({alias: "o", column: "created_at"})],
+            }),
+            alias: "month",
+        },
+    ],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_bad_substr_arity = transform_sqlite(bad_substr_arity);
+
+# ---- profile 越界：profile 不允许 Substr 标量 ----
+let no_substr_profile: PlanProfile = {
+    allow_joins: ['Inner, 'Left],
+    allow_scalar: ['Lower, 'Upper, 'Length, 'Abs, 'Round, 'Coalesce],
+    allow_aggregate: ['Count, 'CountDistinct, 'Sum, 'Avg, 'Min, 'Max],
+    allow_filter: 'True,
+    allow_grouping: 'True,
+    allow_ordering: 'True,
+    allow_limit: 'True,
+};
+let substr_plan: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [
+        {
+            expr: 'ScalarCall({
+                kind: 'Substr,
+                args: [
+                    'Column({alias: "o", column: "created_at"}),
+                    'Bound('Int(1)),
+                    'Bound('Int(7)),
+                ],
+            }),
+            alias: "month",
+        },
+    ],
+    filter: [],
+    joins: [],
+    grouping: [],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_profile_substr = transform_sqlite_with_profile(substr_plan, no_substr_profile);
+
+# ---- 结构非法：grouping 顶层绑定值 ----
+let top_level_bound_grouping: Plan = {
+    revision: "v1",
+    source: {table: "orders", alias: "o"},
+    projection: [{expr: 'Column({alias: "o", column: "id"}), alias: "id"}],
+    filter: [],
+    joins: [],
+    grouping: ['Bound('Int(1))],
+    ordering: [],
+    limit: 'None,
+};
+let attempt_top_level_bound_grouping = transform_sqlite(top_level_bound_grouping);
+
+# 该 output 永远不会被发布：任何 error 都会使最终 Host 结果整体失效。
+export let output: String = "INVALID DEMO: this output must never be published";

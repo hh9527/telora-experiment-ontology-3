@@ -1,0 +1,31 @@
+# Ent-1 非法入口：OrdersCreated 按 ProductCategory 与 DeliveryException 分组
+#
+# 非法场景（ent-1/DOMAIN.md）必须失败：不发布任何部分计划，也不产生 SQL。
+# - 'ProductCategory：能力在目录中获准，但从 Order grain 只能经 fan-out 到达
+#   （无安全路径）→ enterprise-knowledge.unsafe-path；
+# - 'DeliveryException：属于封闭 dimension vocabulary，但无获准 capability
+#   （不在目录中）→ enterprise-knowledge.missing-dimension。
+#
+# 期望：run invalid --best-effort 非零退出、Host 输出 telora.run/v1 诊断，
+# 且不产生任何 Output(String) effect（无 plan/query）。
+
+import "@src/model.telora" {
+    knowledge, MeasureId, DimensionId, Subject, GrainId,
+};
+import "ontology/ontology.telora" { QueryRequest, make_query_creator };
+import "query-builder/query-builder.telora" { Plan };
+
+let invalid_request: QueryRequest(MeasureId, DimensionId, Subject, GrainId, GrainId) = {
+    measures: [
+        {id: 'OrdersCreated, subject: 'Analyst, input: 'Order},
+    ],
+    dimensions: [
+        {id: 'ProductCategory, subject: 'Analyst, input: 'Order},
+        {id: 'DeliveryException, subject: 'Analyst, input: 'Order},
+    ],
+};
+
+let creator = make_query_creator(knowledge);
+let plan: Plan = creator(invalid_request);
+
+export let output = "invalid request unexpectedly produced a plan";
