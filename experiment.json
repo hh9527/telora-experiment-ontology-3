@@ -154,7 +154,7 @@
       },
       {
         "id": "domain.ready",
-        "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json", "ontology/GOAL.md", "ontology/DESIGN.md", "ontology/telora-deps.json", "ent-1/GOAL.md", "ent-1/DOMAIN.md", "ent-1/telora-deps.json", "intent-1/GOAL.md", "intent-1/INTENT.md", "intent-1/FEEDBACK.md", "intent-1/telora-deps.json"]
+        "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json", "ontology/GOAL.md", "ontology/DESIGN.md", "ontology/telora-deps.json", "ent-1/GOAL.md", "ent-1/DOMAIN.md", "ent-1/telora-deps.json", "intent-1/GOAL.md", "intent-1/INTENT.md", "intent-1/telora-deps.json"]
       },
       {
         "id": "qb-feedback-a2.feedback",
