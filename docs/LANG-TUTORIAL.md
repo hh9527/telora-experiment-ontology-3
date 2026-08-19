@@ -303,10 +303,19 @@ type Build(Value) = struct {state: BuildState, value: Option(Value)};
 type BuildState = enum {'Ready, 'Pending};
 ```
 
-family 依赖图中的环、family 自身的参数化递归，以及对普通局部辅助项的依赖仍然
-非法。family 可以引用已经封闭的 concrete recursive type；递归骨架保持 concrete，
-只在其外部参数化 capability、renderer 或 dialect。标识、payload、映射和计划使用
-模型提供的具体类型。不得用 `Any`、`Dyn` 或 String 标识替代未知关系。
+名义 Struct/Enum family 可以用当前全部参数原序直接自递归：
+
+```telora
+type Expr(Leaf) = enum {
+    'Leaf(Leaf),
+    'Call(Array(Expr(Leaf))),
+};
+```
+
+它形成有限 symbolic graph；同一 concrete application 复用 canonical identity。参数
+变换或换序、mutual family cycle、mixed cycle、无生产 alias，以及对普通局部 helper
+的依赖仍然非法。family 也可以引用已经封闭的 concrete recursive type。不得用
+`Any`、`Dyn` 或 String 标识替代本可由类型表达的关系。
 
 ## Value、格式、codec 与 schema
 
@@ -491,10 +500,10 @@ type Dialect(Context) = struct {
 递归类型可以经完整、选择性、alias 或 open import 进入其他模块的函数与 family
 契约。同一模块也可以同时声明递归类型、引用它的 Plan/projection family、递归
 renderer 和多个 transform 契约；`check`/`show` 与严格运行使用相同的递归 component
-封闭规则，不需要为了 checker 人工拆分这些定义。Family 自身不能参数化递归、形成循环 family component，也不能调用同模块
-普通 helper；这是稳定的设计边界，不是待补齐的推断能力。需要共享递归骨架时，把
-递归部分封闭为 concrete type，只在递归结构之外参数化使用它的 capability、renderer
-或 dialect：
+封闭规则，不需要为了 checker 人工拆分这些定义。Family 可以在直接 Struct/Enum
+initializer 中用原参数自递归，但不能变换参数、形成 mutual/mixed cycle 或调用同模块
+普通 helper。需要超出这一边界的共享递归骨架时，把递归部分封闭为 concrete type，
+只在递归结构之外参数化使用它的 capability、renderer 或 dialect：
 
 ```telora
 type Expr = enum {'Literal(Value), 'Call(CallExpr)};
@@ -505,8 +514,9 @@ type Renderer(Context) = struct {
 };
 ```
 
-不同方言需要不同叶节点集合时，分别声明封闭的递归类型，或先把所有允许叶节点
-建模为一个闭合 enum；不要尝试声明递归 family，也不要用 `Any`/`Dyn` 模拟开放递归。
+同一递归代数只需要替换叶节点类型时，优先使用上述同参递归 family。若递归过程中
+必须改变参数，分别声明封闭递归类型或先把允许叶节点建模为闭合 enum；不要用
+`Any`/`Dyn` 模拟开放递归。
 
 ### 复杂 family 值的 codec witness
 
