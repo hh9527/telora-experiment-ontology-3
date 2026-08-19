@@ -58,4 +58,4 @@ mapping。不得用最终 builder、预渲染 SQL、`Any`、`Dyn` 或 String 身
 ## 反馈修订
 
 `qb` 或 `edsl-feedback` 更新使 `edsl.a2` 重新就绪时，重新读取当前公共输入并验证既有
-eDSL。完成后用一次 `oc-task submit a2 ...` 提交本次 pull 返回的完整 artifact 集合。
+eDSL。完成后用一次 `oc-task submit a2 ...` 提交本次 pull 返回的唯一 artifact。

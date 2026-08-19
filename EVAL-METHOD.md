@@ -42,8 +42,7 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
 - 核对 `control/artifacts` marker 与实际交付顺序一致；coordinator 不创建 marker。
 - Agent 只通过 `submit <role> <artifact...>` 控制自己的 `.<role>` artifact；Host 只通过
   `oc-ctl publish` 控制无角色后缀 artifact。
-- feedback 与 build 同时 runnable 时在同一次 pull 中返回，并由一次 complete-batch
-  submit 提交，不需要 claim 或 absorb 语义。
+- feedback 与 build 同时 runnable 时按 artifact 声明顺序逐个 pull、逐个 submit，任务不合并。
 - 核对每个 Host promotion 都晚于对应角色候选和必要评审，且下游首次输出发生在
   promotion 之后。
 - Host 发布的新反馈必须使旧候选失效；上游重新执行后旧 promotion 必须失效并重新

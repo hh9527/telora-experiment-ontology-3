@@ -49,4 +49,4 @@ SQL renderer 或诊断容器。A4 不负责解析任意自然语言，只处理�
 
 非法入口的两个 `run` 应失败；普通模式应给出最直接的原因，`--best-effort` 可用于获取
 更多诊断，但两种模式必须同属失败。完成后用一次 `oc-task submit a4 ...` 提交本次 pull
-返回的完整 artifact 集合。
+返回的唯一 artifact。
