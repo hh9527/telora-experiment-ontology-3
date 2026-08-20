@@ -14,7 +14,7 @@ EnterpriseKnowledge + Request -> Plan -> Query
 固定路径输入（内容属于当前发布轮次）：
 
 - `bin/telora`
-- `docs/LANG-TUTORIAL.md`
+- `docs/TUTORIAL.md`
 - `docs/TELORA-CLI.md`
 - `ent-1/GOAL.md`
 - `ent-1/DOMAIN.md`

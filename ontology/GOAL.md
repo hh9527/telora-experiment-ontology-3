@@ -9,7 +9,7 @@ QueryBuilder 的公共交付，不得在 ontology 中另行定义。
 固定路径输入（内容属于当前发布轮次）：
 
 - `bin/telora`
-- `docs/LANG-TUTORIAL.md`
+- `docs/TUTORIAL.md`
 - `docs/TELORA-CLI.md`
 - `ontology/GOAL.md`
 - `ontology/DESIGN.md`
