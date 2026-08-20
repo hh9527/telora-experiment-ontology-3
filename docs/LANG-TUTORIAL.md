@@ -28,8 +28,8 @@ IEEE 754 binary64。Float 字面量接受小数点形式（`3.5`）和指数形�
 `1.25e-3`）。NaN、正无穷和负无穷都不是 Telora 值。
 
 ```telora
-let answer = 40 + 2;
-def increment = fn(value) { value + 1 };
+def answer = 40 + 2;
+def increment: Fn(Int) -> Int = fn(value) { value + 1 };
 ```
 
 `let`、`def`、`type`、`for`、`fn`、`match`、`native`、`decl`、`import` 和
@@ -707,12 +707,18 @@ import "std/array" as array;
 import "@src/local.telora" { compile };
 import "ontology-lib/types.telora" as types;
 
+def defaults: Defaults = do {
+    let base = load_defaults();
+    normalize(base)
+};
 export def compile: Fn(Input) -> Output = fn(input) { ... };
 export { Entity, Requirement, compile };
 ```
 
-import 是静态的。模块只暴露显式 export。eDSL 必须导出向企业作者承诺的每个
-类型和函数。
+import 是静态的。模块顶层是声明空间，只接受 option、import、type、decl、def、
+native 和 export；普通模块值也使用 `def`。`let` 只用于函数或 `do` 等普通 block
+中的顺序计算和局部 shadow。顶层 `let`、`export let`、裸表达式和 final expression
+都不合法。模块只暴露显式 export。eDSL 必须导出向企业作者承诺的每个类型和函数。
 
 默认 prelude 相当于可遮蔽的隐式 open import，只为本模块尚未声明的名字提供
 fallback。`validate` 等 prelude 名不是保留字，本地 binding 可以正常使用同名；

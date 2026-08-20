@@ -1,1 +1,1 @@
-export let output = "add focused ontology validation";
+export def output = "add focused ontology validation";

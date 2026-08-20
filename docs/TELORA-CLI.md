@@ -25,6 +25,19 @@ Telora 从当前目录向上查找最近的 `telora-deps.json`，因此命令可
 企业 crate 同理，在 `ent-1/` 下运行 `run main` 和 `run verify`；`check
 @test/logistics.telora` 只作为开发期分析。
 
+`check` 的输入仍是完整 Module，不是任意表达式 scratch。模块顶层使用 `def` 声明
+计算根并至少显式 export 一项；顶层 `let`、裸调用和 final expression 均不合法。
+需要局部步骤时把它们放进 `do`：
+
+```telora
+export def lowering_case = do {
+    let plan = lower(request);
+    validate_plan.must_ok!(plan)
+};
+```
+
+多个独立检查应写成多个具名 export，使 best-effort `check` 可以继续不依赖失败项的根。
+
 - `run name` 固定执行 `@bin/name.telora`；实验使用的内置 Entry 把其 String export
   `output` 作为 `Output(String)` effect 发给 Host。`name` 是不含路径分隔符和
   `.telora` 后缀的单个 stem。

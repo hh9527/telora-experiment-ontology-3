@@ -1,1 +1,1 @@
-export let output = "validate rejected enterprise intent";
+export def output = "validate rejected enterprise intent";
