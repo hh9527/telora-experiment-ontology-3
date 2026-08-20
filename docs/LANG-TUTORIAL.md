@@ -467,6 +467,27 @@ let dimensions: Array(DimDef) = [
 type，或记录需要先在数组之外分别构造时，才给完整记录或具名构建函数添加 concrete
 family 契约。巨大 union 错误应首先检查是否缺少这个公共期望类型。
 
+### 声明 enum 的直接 expected context
+
+已经确定的声明 enum 契约会直接下传到 Array 元素、record 字段、函数参数和返回值、
+`if`/`match` 分支以及带函数类型标注的 closure。Expr、Operator、Val 等递归或非递归
+enum 应在构造边界提供一次完整契约：
+
+```telora
+def make_expr: Fn() -> Expr = fn() { 'Column({alias: "orders", column: "id"}) };
+
+def plan: Plan = do {
+    let expr: Expr = if use_all { 'All } else { 'Column({alias: "orders", column: "id"}) };
+    let operators: Array(Operator) = ['Filter(expr), 'Project([expr])];
+    {expr, operators}
+};
+```
+
+expected type 不穿过未标注 binding 反向解释它的定义。不要先写
+`def raw = 'Column(...);`，再依靠后续 `def expr: Expr = raw;` 为 `raw` 补身份；应在
+字面量、分支、closure 或集合的直接构造点标注 `Expr`。这也避免根据 tag 名全局猜测
+一个 nominal enum owner。未知 variant 和不兼容 payload 仍然是确定的类型错误。
+
 ### enum payload 不能是匿名 Struct 类型
 
 Enum variant payload 是 TypeMetadata 表达式。`struct { ... }` 只允许作为直接
