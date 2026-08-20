@@ -11,12 +11,13 @@ Telora 从当前目录向上查找最近的 `telora-deps.json`，因此命令可
 ./bin/telora run main -C ontology
 ./bin/telora run verify -C ontology
 ./bin/telora check @test/ontology.telora -C ontology
-./bin/telora show @bin/main.telora -C ontology
-./bin/telora show @src/ontology.telora -C ontology -k type,let,def,import
-./bin/telora show @src/ontology.telora -C ontology --exports
-./bin/telora show @src/ontology.telora -C ontology --at 12:4
-./bin/telora show std/string -C ontology --exports
-./bin/telora show std/array -C ontology -p flat_map
+./bin/telora query modules -C ontology
+./bin/telora query at @bin/main.telora -C ontology
+./bin/telora query at @src/ontology.telora -C ontology -k type,let,def,import
+./bin/telora query exports @src/ontology.telora -C ontology
+./bin/telora query at @src/ontology.telora:12:3 -C ontology
+./bin/telora query exports std/string -C ontology
+./bin/telora query at std/array -C ontology -p flat_map
 ./bin/telora run -S path/to/file.telora
 ./bin/telora run main -C ontology --entry path/to/entry.telora
 ./bin/telora run invalid -C ontology --best-effort
@@ -55,8 +56,8 @@ export def lowering_case = do {
 - `run -S file` 进入 standalone 模式，不发现 manifest，只使用根文件内的
   `crate.dependency` / `crate.format` options；这些 options 相对文件父目录解析。
   `-S` 与 binary name、`-C` 互斥。
-- `run`、`check` 和 `show` 的 `-C context` 都从 `context` 开始向上发现 manifest；
-  `check` 和 `show` 接受完整稳定模块 ID，`check @test/...` 检查测试入口，`run` 只
+- `run`、`check` 和 `query` 的 `-C context` 都从 `context` 开始向上发现 manifest；
+  `check` 和 `query` 接受完整稳定模块 ID，`check @test/...` 检查测试入口，`run` 只
   接受 binary name。
 - `check` 用 best-effort 模式继续彼此独立的求值，以一次收集更多诊断；最终判定仍然
   严格。stdout 完全采用 `telora.check/v1` JSONL：先输出诊断 records，最后输出一条
@@ -64,19 +65,23 @@ export def lowering_case = do {
   `status: "ok"`；它不把递归 TypeMetadata 等内部图物化为 legacy Host value。任何
   语法、类型、解析或运行时失败都会得到 `status: "error"` 和非零退出。
   最终应用验收仍以 `run` 为准，因为 `run` 还经过 Entry 调度。
-- `show` 输出 `telora.show/v1` JSONL 语义记录；默认列出选中模块的顶层 local
-  definitions。它查询 recoverable CST 和部分语义/求值证据图，因此在模块损坏时仍可
-  返回不受影响的事实；命令成功只表示查询完成，不表示模块能够通过 `check` 或 `run`。
-- `show std/...` 直接查询 Host 注册的公开标准库逻辑模块，与源码 `import "std/..."`
+- `query`（可见别名 `q`）输出 `telora.query/v1` JSONL 语义记录。`query modules`
+  列出当前 crate 可见的规范模块 ID；`query exports <module>` 查询公共接口；
+  `query at <module>` 查询顶层 local definitions，追加 `:<line>` 或 `:<line>:<column>`
+  查询与源码行或位置相交的事实。它查询 recoverable CST 和部分语义/求值证据图，因此
+  在模块损坏时仍可返回不受影响的事实；命令成功只表示查询完成，不表示模块能够通过
+  `check` 或 `run`。
+- `query at std/...` 和 `query exports std/...` 直接查询 Host 注册的公开标准库逻辑模块，与源码 `import "std/..."`
   使用同一模块身份；不需要也不能把 `std` 声明成 workspace dependency。
 - `-p` 按名称的大小写敏感字面子串过滤，不是 glob 或正则。
-- `-k` 接受逗号分隔的 `type,let,def,import`；`--exports` 改查公共接口并与 `-k`
-  互斥。
+- `query at <module> -k` 接受逗号分隔的 `type,let,def,import`；公共接口使用独立的
+  `query exports` 子命令查询。
 - Namespace import 的记录用 `target` 给出目标模块 ID，不带普通值 `type`；用
-  `show <target> --exports` 查询其成员的精确 type/scheme。Selective import 的记录
+  `query exports <target>` 查询其成员的精确 type/scheme。Selective import 的记录
   直接携带所选成员的精确 type/scheme。
-- `--at line[:column]` 使用从一开始计数的位置：行号选择与该行相交的事实，行列选择
-  覆盖该点的事实；它与 `-p`、`-k`、`--exports` 互斥。
+- `query at <module>:<line>[:<column>]` 的行号从 1 开始，列号从 0 开始并按 UTF-8
+  byte 计数；输出范围同样采用 1-based line、0-based UTF-8 column 的半开区间。
+  带行号的位置查询不接受 `-p` 或 `-k`。
 
 程序中的 `dbg!(expr)` 和 `expr.dbg!()` 把旁路观察写入 stderr，不改变 stdout 的
 `output`。每个事件是一行紧凑 JSON：
@@ -91,6 +96,6 @@ export def lowering_case = do {
 Telora 程序不可感知。Float 的 `repr` 使用 Debug 表示，例如 `3.0` 和 `-0.0`；它与
 字符串插值和 `fmt.display` 使用的 Display 表示不同。
 
-命令退出码为零表示请求成功；非零表示 CLI 或 Telora 拒绝。`show` 的空匹配成功且
+命令退出码为零表示请求成功；非零表示 CLI 或 Telora 拒绝。`query` 的空匹配成功且
 没有输出。记录中的 `authority` 区分 `authoritative`、`recovery` 与 `debug` 事实。
 表达式级记录属于 `debug`；错误恢复记录的 authority 服从其事实和模块状态。

@@ -50,7 +50,7 @@ mapping。不得用最终 builder、预渲染 SQL、`Any`、`Dyn` 或 String 身
 ./bin/telora run verify -C ontology
 ./bin/telora run invalid -C ontology --best-effort
 ./bin/telora check @test/ontology.telora -C ontology
-./bin/telora show @bin/main.telora -C ontology
+./bin/telora query exports @bin/main.telora -C ontology
 ```
 
 完成时报告真实交付、验证结果与剩余限制，不要求 Git commit。

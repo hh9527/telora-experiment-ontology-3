@@ -520,7 +520,7 @@ type Dialect(Context) = struct {
 
 递归类型可以经完整、选择性、alias 或 open import 进入其他模块的函数与 family
 契约。同一模块也可以同时声明递归类型、引用它的 Plan/projection family、递归
-renderer 和多个 transform 契约；`check`/`show` 与严格运行使用相同的递归 component
+renderer 和多个 transform 契约；`check`/`query` 与严格运行使用相同的递归 component
 封闭规则，不需要为了 checker 人工拆分这些定义。Family 可以在直接 Struct/Enum
 initializer 中用原参数自递归，但不能变换参数、形成 mutual/mixed cycle 或调用同模块
 普通 helper。需要超出这一边界的共享递归骨架时，把递归部分封闭为 concrete type，

@@ -15,7 +15,7 @@
       "./bin/telora run verify -C query-builder",
       "./bin/telora run invalid -C query-builder --best-effort",
       "./bin/telora check @test/query-builder.telora -C query-builder",
-      "./bin/telora show @bin/main.telora -C query-builder"
+      "./bin/telora query exports @bin/main.telora -C query-builder"
     ],
     "a2": [
       "./bin/oc-task pull a2",
@@ -24,7 +24,7 @@
       "./bin/telora run verify -C ontology",
       "./bin/telora run invalid -C ontology --best-effort",
       "./bin/telora check @test/ontology.telora -C ontology",
-      "./bin/telora show @bin/main.telora -C ontology"
+      "./bin/telora query exports @bin/main.telora -C ontology"
     ],
     "a3": [
       "./bin/oc-task pull a3",
@@ -35,7 +35,7 @@
       "./bin/telora run invalid -C ent-1 --best-effort",
       "./bin/telora check @test/logistics.telora -C ent-1",
       "./bin/telora check @test/query-surface.telora -C ent-1",
-      "./bin/telora show @bin/main.telora -C ent-1"
+      "./bin/telora query exports @bin/main.telora -C ent-1"
     ],
     "a4": [
       "./bin/oc-task pull a4",
@@ -45,7 +45,7 @@
       "./bin/telora run invalid -C intent-1",
       "./bin/telora run invalid -C intent-1 --best-effort",
       "./bin/telora check @test/intent.telora -C intent-1",
-      "./bin/telora show @bin/main.telora -C intent-1"
+      "./bin/telora query exports @bin/main.telora -C intent-1"
     ]
   },
   "metrics": {

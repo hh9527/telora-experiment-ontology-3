@@ -80,7 +80,7 @@ query = query_builder.transform(plan)
 ./bin/telora run verify -C ent-1
 ./bin/telora run invalid -C ent-1 --best-effort
 ./bin/telora check @test/logistics.telora -C ent-1
-./bin/telora show @bin/main.telora -C ent-1
+./bin/telora query exports @bin/main.telora -C ent-1
 ```
 
 完成时报告真实结果与具体反馈，不要求 Git commit。
