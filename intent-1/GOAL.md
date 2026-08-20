@@ -7,7 +7,7 @@
 ## 完整输入清单
 
 - `bin/telora`
-- `docs/TUTORIAL.md`
+- `docs/TELORA.md`
 - `docs/TELORA-CLI.md`
 - `intent-1/GOAL.md`
 - `intent-1/INTENT.md`

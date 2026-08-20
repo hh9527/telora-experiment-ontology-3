@@ -9,7 +9,7 @@ ontology 概念或企业领域事实。本轮只实现 SQLite，不扩展其他 
 固定路径输入（内容属于当前发布轮次）：
 
 - `bin/telora`
-- `docs/TUTORIAL.md`
+- `docs/TELORA.md`
 - `docs/TELORA-CLI.md`
 - `query-builder/GOAL.md`
 - `query-builder/DESIGN.md`

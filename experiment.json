@@ -134,8 +134,14 @@
     },
     {
       "name": "lang-tutorial",
-      "source": "TUTORIAL.md",
-      "to": "docs/TUTORIAL.md",
+      "source": "guide/TELORA.md",
+      "to": "docs/TELORA.md",
+      "mode": "0444"
+    },
+    {
+      "name": "cli-guide",
+      "source": "guide/TELORA-CLI.md",
+      "to": "docs/TELORA-CLI.md",
       "mode": "0444"
     },
     {
@@ -152,7 +158,7 @@
     "finish_artifact": "intent-1",
     "stop_path": "control/STOP",
     "artifacts": {
-      "lang": {"desc": "Telora release binary、语言教程和 CLI 手册", "checks": ["bin/telora", "docs/TUTORIAL.md", "docs/TELORA-CLI.md"]},
+      "lang": {"desc": "Telora release binary、语言教程和 CLI 手册", "checks": ["bin/telora", "docs/TELORA.md", "docs/TELORA-CLI.md"]},
       "qb-req": {"desc": "QueryBuilder 设计需求", "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json"]},
       "edsl-req": {"desc": "eDSL 设计需求", "checks": ["ontology/GOAL.md", "ontology/DESIGN.md", "ontology/telora-deps.json"]},
       "domain-ent-1": {"desc": "Ent-1 企业领域知识和数据模型", "checks": ["ent-1/GOAL.md", "ent-1/DOMAIN.md", "ent-1/telora-deps.json"]},
