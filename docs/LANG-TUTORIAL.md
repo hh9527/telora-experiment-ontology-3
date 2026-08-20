@@ -621,12 +621,42 @@ let message = `missing capability \{name}`;
 let progress = `ratio=\{3.0}, offset=\{-0.0}`; # "ratio=3, offset=-0"
 ```
 
-插值支持 String、Int、Float 和 Atom。Float 与 `fmt.display(Float, value)` 都使用
-有限 binary64 的 Display 表示：最短、可往返、不受 locale 影响；`3.0` 显示为 `3`，
-`-0.0` 显示为 `-0`，原始小数或指数拼写不会保留。`dbg!` 的 Float `repr` 使用
-Debug 表示，会将二者分别写成
-`3.0` 和 `-0.0`。插值不渲染任意 Tagged、
-Struct、Array、Dict、Tuple、Dyn 或用户值。主体是结构化值时，消息应保持静态。
+普通字符串支持 `\0`、`\n`、`\r`、`\t`、`\"`、`\\`、两位 ASCII `\xNN`、
+Unicode scalar `\u{...}` 和反斜杠换行后的显式续行。反引号字符串使用 `` \` ``
+代替 `\"`，并额外用 `\{...}` 表达插值。raw String 不处理 escape 或插值；正则、
+SQL 模板等包含大量反斜杠的文本优先使用 raw String，并按需增加 `#` delimiter。
+
+插值按值的运行时 primitive `meta` 支持 String、Int、Float 和 Atom，不读取名义
+`ty`，也不会寻找 `fmt.display` provider。静态检查只尽早排除已知不可能落入这四种
+表示的表达式。例如 `Bool` 值可以插值，是因为其表示为 Atom，而不是因为 Bool
+实现了 Display。Float 使用有限 binary64 的稳定文本表示：最短、可往返、不受
+locale 影响；`3.0` 显示为 `3`，`-0.0` 显示为 `-0`，原始小数或指数拼写不会保留。
+
+插值不渲染任意 Tagged、Struct、Array、Dict、Tuple、Dyn 或用户值。声明 enum 和
+Tagged payload 应先通过 `match` 得到明确文本；Array/Dict 的人类展示应显式
+`array.map` 后使用 `string.join`。不要为了展示而把 Query binding 插入 SQL；仍应
+保持 `{ sql, bindings }` 的参数绑定边界。
+
+`std/fmt` 是独立的显式 TypeMetadata-driven 能力：
+
+```telora
+import "std/fmt" as fmt;
+
+@fmt.display_by("{host}:{port}")
+type Endpoint = struct { host: String, port: Int };
+
+def endpoint_text: Fn(Endpoint) -> String = fn(endpoint) {
+    fmt.display(Endpoint, endpoint)
+};
+```
+
+`display_by` 是受控模板 eDSL：它构造带 `std/fmt.display` attribute 的 TypeMetadata，
+而 `fmt.display` 显式接收这份 TypeMetadata。它不是 trait、`ToString` 或把模板转换成
+Telora 表达式的代码生成函数，也不参与 `\{...}` 插值。
+
+`dbg!` 的 `repr` 是 Host-only、有界且 cycle-safe 的观察文本，不进入 Telora String；
+codec/JSON 是数据交换协议，也不是展示 API。Float 的 debug repr 会保留 `3.0` 和
+`-0.0`，有意不同于插值及 `fmt.display` 的 `3` 和 `-0`。
 
 ```telora
 def check_capability: Fn(Subject) -> Result(Capability, String) = fn(subject) {
