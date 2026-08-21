@@ -1,19 +1,20 @@
 # Ontology 3 evaluation method
 
-本文只供 Host 使用，不注入角色提示。实验问题是：四个隔离角色能否仅通过稳定公共
+本文只供 Host 使用，不注入角色提示。实验问题是：五个隔离角色能否仅通过稳定公共
 契约，依次建立 QueryBuilder、EnterpriseKnowledge eDSL、具体企业知识和公共查询面，
 并完成：
 
 ```text
 EnterpriseKnowledge + Request -> Plan -> SQLite Query
 private text intent -> typed Request -> public lower -> SQLite Query
+natural-language problem -> JSON intent -> fixed query command -> answer
 ```
 
 ## 受控输入
 
 所有角色固定使用 `deepseek/deepseek-v4-flash`。对每个输入发布轮次分别记录 plan
 commit/origin、Telora revision 与 binary hash、OpenCode/model 配置，以及
-`experiment.json`、`opencode.json`、角色文件、语言/CLI 教程、四个 GOAL、两个
+`experiment.json`、`opencode.json`、角色文件、语言/CLI 教程、各角色 GOAL、两个
 DESIGN、DOMAIN、INTENT 和该轮 FEEDBACK 的 hash。只有输入一致的结果才直接比较；
 runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
 
@@ -37,7 +38,9 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
   A4 私有 `INTENT.md`。
 - A4 只读语言/CLI、A3 公共查询教程/契约和自己的 GOAL/INTENT/FEEDBACK，不读 DOMAIN、
   A3 私有源码或 A1/A2 文件。依赖清单中的传递 package 不构成可见输入。
-- coordinator 只启动 A1-A4 各一个原生 child session，不补写任务定义或观察交付状态。
+- A5 只读 `query-1` 的公开查询文档、当前题面、intent 和结果，只修改 intent/结果，且
+  只能运行固定的 `just make-query`；不得读取 Telora 或 A1-A3 私有实现。
+- coordinator 只启动 A1-A5 各一个原生 child session，不补写任务定义或观察交付状态。
 - `ent-1/FEEDBACK.md` 初始必须为零字节；角色只在 `oc-task` 返回对应任务后读取动态输入。
 - 核对 `control/artifacts/**` 与实际交付顺序一致；coordinator 不直接创建 artifact。
 - Agent 只通过 `submit <role> <artifact...>` 控制自己的 `.<role>` artifact；Host 只通过
@@ -96,9 +99,16 @@ Host 同时读取私有 DOMAIN 与 INTENT，检查 A4 的 typed Request 是否�
 但不得发布部分 Query。A4 不得重写 Plan/Query/SQL 或诊断容器。单独统计语言学习、公共
 查询面学习、意图建模的时间、token 与代码/文档产出。
 
+## A5 评估
+
+上岗考试只验证 A5 能否依靠公开 JSON intent 文档和固定命令取得 Query、理解诊断并修正。
+Host 验收 `homework.a5` 后才发布 `lic`。真题由 Host 后续投递并发布 `problem`；A5 成功时
+必须交付命令实际返回的规范化 intent、SQL 与 bindings，失败时必须依据最终 Telora 诊断
+解释需求不合法或信息不足。不得把读取实现、手写 SQL 或猜测物理 mapping 计为成功。
+
 ## 过程与反馈
 
-分别记录四个角色首次语言探索、首次写入、反馈修正、wall time、token、命令失败、
+分别记录五个角色首次学习、首次写入、反馈修正、wall time、token、命令失败、
 类型擦除、公共泛型复杂度和文档/实现差异。每轮 A3 交付后 Host 判断结束外部 TUI 或发布
 下一轮输入。只有当前语言能力内仍有明显的 QueryBuilder/eDSL 改进空间时，
 才发布批准反馈；语言机制问题仍转为独立 issue。若 Host 在 idle 边界发布新版

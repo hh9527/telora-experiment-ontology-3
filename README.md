@@ -1,12 +1,13 @@
 # Ontology 3: QueryBuilder -> eDSL -> EnterpriseKnowledge
 
-本仓库是 Telora 主仓库固定的 OpenCode 实验计划，包含四个隔离角色：
+本仓库是 Telora 主仓库固定的 OpenCode 实验计划，包含五个隔离角色：
 
 ```text
 A1 QueryBuilder: Plan -> SQLite Query
 A2 ontology eDSL: EnterpriseKnowledge -> Request -> Plan
 A3 ent-1 model: domain facts -> EnterpriseKnowledge
 A4 intent-1: private text intent -> typed Request -> public lower -> Query
+A5 query-1: JSON intent -> fixed query command -> production answer
 ```
 
 `Plan` 使用标准算子且方言中立；本轮 QueryBuilder 只具体化 SQLite，`Query` 形状为
@@ -19,7 +20,9 @@ A4 intent-1: private text intent -> typed Request -> public lower -> Query
 - A2 只实现 `ontology/`，只看 A1 的公共教程和契约。
 - A3 只实现 `ent-1/`，只看 A1/A2 的公共教程和契约；公共查询面不得泄漏物理 mapping。
 - A4 只实现 `intent-1/`，只看 A3 的公共查询教程/契约和自己的私有文字意图。
-- coordinator 只启动四个长期角色，之后不解释或调度工作。
+- A5 只修改 `query-1/src/intent.json`，只执行 `just make-query`，看不到
+  Telora、私有模型和物理 mapping。
+- coordinator 只启动五个长期角色，之后不解释或调度工作。
 
 每个角色只使用两个 DAG 命令：
 
@@ -63,6 +66,11 @@ ent-1-query-surface.a3 + ent-1-query-surface-feedback.a4 -> Host 发布 ent-1-qu
 lang + intent-req -> lang-learn.a4
 ent-1-query-surface + lang-learn.a4 -> intent-1.a4
 intent-1.a4 -> Host 发布 intent-1
+
+Host 发布 query-engine + query-doc + homework -> homework.a5
+homework.a5 -> Host 审批 lic
+Host 投递并发布 problem + lic -> answer.a5
+answer.a5 -> Host 验收 answer
 ```
 
 带 `?` 的输入只是普通可选 artifact：缺失时 mtime 视为 0，不阻断首版；发布后使较旧的
@@ -84,6 +92,10 @@ feedback 状态。
 ./oc-ctl update t001 ent-1/QUERY-SURFACE-FEEDBACK.md=feedback/query-surface.md
 ./oc-ctl publish t001 ent-1-query-surface-feedback
 ./oc-ctl publish t001 intent-1
+./oc-ctl publish t001 query-engine query-doc
+./oc-ctl publish t001 lic
+./oc-ctl publish t001 problem
+./oc-ctl publish t001 answer
 ```
 
 发布反馈 artifact 前，Host 先把筛选后的正文写入其 checks 指定的反馈文件。语言机制问题
@@ -102,6 +114,19 @@ feedback 状态。
 ../../oc-ctl start t001 ontology-3
 ```
 
+要在新会话中复用旧执行已经验收的 A1-A4 产物，而不重新运行长耗时阶段：
+
+```bash
+./oc-run t002 4200
+../../oc-ctl test-connect t002
+../../oc-ctl start t002 ontology-3 --from t001
+```
+
+来源执行中兼容且仍为 current 的 artifact 会连同 checks 文件一起继承；Host promotion
+可以安全吸收旧审批前已经完成的新增 review 门禁。旧会话和
+`.oc-task` 不会继承。Host 随后发布新增的 `query-engine`、`query-doc`，A5 即从上岗考试
+开始工作。
+
 使用以下命令观察和干预：
 
 ```bash
@@ -112,5 +137,5 @@ feedback 状态。
 ../../oc-ctl publish t001 artifact
 ```
 
-准备阶段构建并复制 release Telora binary。coordinator 与 A1-A4 均固定使用
+准备阶段构建并复制 release Telora binary。coordinator 与 A1-A5 均固定使用
 `deepseek/deepseek-v4-flash`。`experiment.json` 是 Host 配置，对角色不可见。

@@ -46,6 +46,11 @@
       "./bin/telora run invalid -C intent-1 --best-effort",
       "./bin/telora check @test/intent.telora -C intent-1",
       "./bin/telora query exports @bin/main.telora -C intent-1"
+    ],
+    "a5": [
+      "./bin/oc-task pull a5",
+      "./bin/oc-task submit a5 *",
+      "just make-query"
     ]
   },
   "metrics": {
@@ -121,6 +126,14 @@
             "docs": ["intent-1/FEEDBACK.md", "intent-1/NOTES.md"]
           }
         }
+      },
+      "a5": {
+        "learning_phases": ["qualification"],
+        "work_phase": "production_query",
+        "work_files": ["query-1/src/intent.json"],
+        "artifacts": {
+          "documents": {"intent": ["query-1/src/intent.json"]}
+        }
       }
     }
   },
@@ -153,9 +166,9 @@
   ],
   "workflow": {
     "schema": "telora.opencode-artifact-workflow/v1",
-    "roles": ["a1", "a2", "a3", "a4"],
-    "start_artifacts": ["lang", "qb-req", "edsl-req", "domain-ent-1", "intent-req"],
-    "finish_artifact": "intent-1",
+    "roles": ["a1", "a2", "a3", "a4", "a5"],
+    "start_artifacts": ["lang", "qb-req", "edsl-req", "domain-ent-1", "intent-req", "homework"],
+    "finish_artifact": "answer",
     "artifacts": {
       "lang": {"desc": "Telora release binary、语言教程和 CLI 手册", "checks": ["bin/telora", "docs/TELORA.md", "docs/TELORA-CLI.md"]},
       "qb-req": {"desc": "QueryBuilder 设计需求", "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json"]},
@@ -241,7 +254,44 @@
         "checks": ["intent-1/src/request.telora", "intent-1/src/bin/main.telora", "intent-1/src/bin/verify.telora", "intent-1/src/bin/invalid.telora", "intent-1/tests/intent.telora", "intent-1/FEEDBACK.md", "intent-1/NOTES.md"],
         "instruction": "学习批准后的公共查询面，把 INTENT.md 的合法与非法意图表达为 typed Request 并只调用公共 lower；完成实际验证并记录公共模型反馈，然后提交 intent-1.a4。"
       },
-      "intent-1": {"desc": "Host 验收的最终 A4 查询结果", "input": ["intent-1.a4"]}
+      "intent-1": {"desc": "Host 验收的最终 A4 查询结果", "input": ["intent-1.a4"]},
+
+      "query-engine": {
+        "desc": "Host 投递并确认可供 A5 使用的固定查询引擎",
+        "checks": ["justfile", "query-1/src/bin/query.telora", "query-1/telora-deps.json", "query-builder/src/**/*.telora", "ontology/src/**/*.telora", "ent-1/src/model.telora", "ent-1/src/query.telora"]
+      },
+      "query-doc": {
+        "desc": "Host 投递并确认可供 A5 使用的结构化意图与企业查询能力文档",
+        "checks": ["query-1/QUERY-DOC.md"]
+      },
+      "homework": {
+        "desc": "A5 上岗考试题",
+        "checks": ["query-1/HOMEWORK.md"]
+      },
+      "homework.a5": {
+        "desc": "A5 上岗考试答卷",
+        "input": ["query-engine", "query-doc", "homework"],
+        "checks": ["query-1/src/intent.json"],
+        "instruction": "完整阅读 query-1/GOAL.md、QUERY-DOC.md 和 HOMEWORK.md。只修改 query-1/src/intent.json，反复执行 just make-query；提交前在当前消息中给出经过实际验证的结构化意图及命令结果或诊断归因，然后提交 homework.a5。"
+      },
+      "lic": {
+        "desc": "Host 审批的 A5 上岗许可",
+        "input": ["homework.a5"]
+      },
+      "problem": {
+        "desc": "Host 投递的生产查询问题",
+        "checks": ["query-1/PROBLEM.md"]
+      },
+      "answer.a5": {
+        "desc": "A5 对生产查询问题的回答",
+        "input": ["lic", "problem"],
+        "checks": ["query-1/src/intent.json"],
+        "instruction": "读取 query-1/PROBLEM.md；只修改 query-1/src/intent.json，反复执行 just make-query。提交前在当前消息中给出最终 JSON；无法生成计划时依据最终 Telora 诊断给出自然语言归因，然后提交 answer.a5。"
+      },
+      "answer": {
+        "desc": "Host 验收的 A5 生产查询回答",
+        "input": ["answer.a5"]
+      }
     }
   },
   "validation": [
@@ -253,8 +303,9 @@
     {"name": "enterprise-verify", "cwd": "ent-1", "command": ["../bin/telora", "run", "verify"], "required": true},
     {"name": "enterprise-query-surface", "cwd": "ent-1", "command": ["../bin/telora", "run", "query-surface"], "required": true},
     {"name": "intent", "cwd": "intent-1", "command": ["../bin/telora", "run", "main"], "required": true},
-    {"name": "intent-verify", "cwd": "intent-1", "command": ["../bin/telora", "run", "verify"], "required": true}
+    {"name": "intent-verify", "cwd": "intent-1", "command": ["../bin/telora", "run", "verify"], "required": true},
+    {"name": "query-engine", "command": ["just", "make-query"], "required": false}
   ],
-  "observe": ["query-builder", "ontology", "ent-1", "intent-1"],
-  "archive": ["control", ".oc-task", "docs", "query-builder", "ontology", "ent-1", "intent-1", ".opencode", "opencode.json", "experiment.json"]
+  "observe": ["query-builder", "ontology", "ent-1", "intent-1", "query-1"],
+  "archive": ["control", ".oc-task", "docs", "query-builder", "ontology", "ent-1", "intent-1", "query-1", "justfile", ".opencode", "opencode.json", "experiment.json"]
 }
