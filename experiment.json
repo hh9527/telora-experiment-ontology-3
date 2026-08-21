@@ -286,7 +286,7 @@
         "desc": "A5 对生产查询问题的回答",
         "input": ["lic", "problem"],
         "checks": ["query-1/src/intent.json"],
-        "instruction": "读取 query-1/GOAL.md 和 PROBLEM.md，先判断题面是否唯一确定了查询语义。若存在多个合理 intent，不得自行消歧义或把某个可执行候选当作最终答案；在当前消息中说明需补充的信息，并尽可能给出最可能的语义候选及其差异。语义唯一时，只修改 query-1/src/intent.json，反复执行 just make-query，并在提交前给出最终 JSON。无法生成计划时依据最终 Telora 诊断给出自然语言归因，然后提交 answer.a5。"
+        "instruction": "读取 query-1/GOAL.md 和 PROBLEM.md，先判断题面是否唯一确定了查询语义。若存在多个合理 intent，不得自行消歧义或把某个可执行候选当作最终答案；不要修改 intent.json 或运行候选，只用面向业务用户的自然语言说明需补充的信息，并给出业务语义候选及其差异，不得包含 SQL、bindings、表列、join 或内部标识符。语义唯一时，只修改 query-1/src/intent.json，反复执行 just make-query，并在提交前给出最终 JSON。无法生成计划时依据最终 Telora 诊断给出自然语言归因，然后提交 answer.a5。"
       },
       "answer": {
         "desc": "Host 验收的 A5 生产查询回答",
