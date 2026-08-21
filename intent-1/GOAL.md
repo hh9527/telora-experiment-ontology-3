@@ -26,12 +26,14 @@
 ## 交付物
 
 - `intent-1/src/`：只包含公共 typed Request 与调用公共 `lower` 所需代码；
-- `intent-1/src/bin/main.telora`：合法文字意图得到 Query；
+- `intent-1/src/bin/main.telora`：合法文字意图得到完整 Query，实际输出必须同时保留 SQL
+  与有序 bindings，不能只输出 SQL；
 - `intent-1/src/bin/verify.telora`：重复 lowering 的 Query 严格相同，并验证公共结果契约；
 - `intent-1/src/bin/invalid.telora`：已知公共词汇构成的非法意图被拒绝且无 Query；
 - `intent-1/tests/intent.telora`：公共类型与合法链路检查；
 - `intent-1/FEEDBACK.md`：公共查询面存在的具体歧义、缺口或不必要泄漏；
-- `intent-1/NOTES.md`：Request 选择、真实验证结果和剩余风险。
+- `intent-1/NOTES.md`：Request 选择、从真实命令输出取得的完整 `{sql, bindings}`、诊断
+  结果和剩余风险，不得只转述“bindings 已验证”。
 
 不得修改 `intent-1/telora-deps.json`，不得定义替代 Request DSL、Plan、QueryBuilder、
 SQL renderer 或诊断容器。A4 不负责解析任意自然语言，只处理本轮两个有界意图。

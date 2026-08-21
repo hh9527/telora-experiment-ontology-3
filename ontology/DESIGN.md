@@ -14,13 +14,18 @@ make_query_creator:
 
 EnterpriseKnowledge 至少表达：
 
-- revision 与封闭的领域 vocabulary；
+- 不透明的 String revision 与封闭的领域 vocabulary；
 - 实体、属性、指标、维度和关系等 ontology 事实；
 - 能力目录、授权和每项能力所需的有类型输入；
 - 基础数据源、结构化物理表达式与结构化关系 mapping；
 - 安全关系与会扩张 grain 的关系；
 - 此知识接受的 QueryBuilder `PlanProfile`；
 - 将能力、关系和物理事实 lowering 为标准 Plan 算子的规则。
+
+Knowledge 不能假定全企业只有一个 base entity。每项 measure 在自己的 natural grain
+上登记，一次请求由 measure 决定 base grain；多个 measure 必须 grain 兼容，否则明确
+失败。维度表达式既能引用属性，也能使用 `PlanProfile` 允许的标准标量算子组成受控计算
+表达式；例如 `Substr(attribute, 1, 7)` 的字面量必须 lower 为绑定值，不能保存预渲染 SQL。
 
 企业知识不得使用预渲染 SQL、任意 builder 回调或 String 反查来绕过公共规则。
 `PlanProfile` 只收窄标准算子能力，不能改变任何算子的语义。

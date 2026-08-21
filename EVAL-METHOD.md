@@ -39,7 +39,7 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
   A3 私有源码或 A1/A2 文件。依赖清单中的传递 package 不构成可见输入。
 - coordinator 只启动 A1-A4 各一个原生 child session，不补写任务定义或观察交付状态。
 - `ent-1/FEEDBACK.md` 初始必须为零字节；角色只在 `oc-task` 返回对应任务后读取动态输入。
-- 核对 `control/artifacts` marker 与实际交付顺序一致；coordinator 不创建 marker。
+- 核对 `control/artifacts/**` 与实际交付顺序一致；coordinator 不直接创建 artifact。
 - Agent 只通过 `submit <role> <artifact...>` 控制自己的 `.<role>` artifact；Host 只通过
   `oc-ctl publish` 控制无角色后缀 artifact。
 - feedback 与 build 同时 runnable 时按 artifact 声明顺序逐个 pull、逐个 submit，任务不合并。
@@ -47,6 +47,8 @@ runtime 更新前后的结果属于同一 execution 中两个不同 epoch。
   promotion 之后。
 - Host 发布的新反馈必须使旧候选失效；上游重新执行后旧 promotion 必须失效并重新
   人工审核。不得以文件存在或自动验证成功替代人工放行。
+- `oc-ctl status` 一旦列出 `next_host_actions`，Host 必须立即检视相应候选并选择
+  `publish` 或投递 feedback；“不干预 working Agent”不能被解释成继续等待 Host 门禁。
 - `ent-1-model` 必须早于公共 facade 首次写入；`ent-1-query-surface` 必须
   早于 A4 首次 Request 写入。A3 公共面不得包含物理名词或隐藏 intent 答案。
 - A4 首轮若仍有无需语言变化的明确改进空间，Host 可筛选并发布至多一次

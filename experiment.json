@@ -53,10 +53,10 @@
       "a1": {
         "learning_phases": ["language_learning"],
         "work_phase": "implementation",
-        "work_files": ["query-builder/src/query_builder.telora"],
+        "work_files": ["query-builder/src/*.telora"],
         "artifacts": {
           "code": {
-            "core": ["query-builder/src/query_builder.telora"],
+            "core": ["query-builder/src/*.telora"],
             "entries": ["query-builder/src/bin/*.telora"],
             "tests": ["query-builder/tests/query-builder.telora"]
           },
@@ -72,10 +72,10 @@
       "a2": {
         "learning_phases": ["language_learning", "query_builder_draft_review"],
         "work_phase": "implementation",
-        "work_files": ["ontology/src/graph.telora"],
+        "work_files": ["ontology/src/*.telora"],
         "artifacts": {
           "code": {
-            "core": ["ontology/src/graph.telora", "ontology/src/ontology.telora"],
+            "core": ["ontology/src/*.telora"],
             "entries": ["ontology/src/bin/*.telora"],
             "tests": ["ontology/tests/ontology.telora"]
           },
@@ -156,7 +156,6 @@
     "roles": ["a1", "a2", "a3", "a4"],
     "start_artifacts": ["lang", "qb-req", "edsl-req", "domain-ent-1", "intent-req"],
     "finish_artifact": "intent-1",
-    "stop_path": "control/STOP",
     "artifacts": {
       "lang": {"desc": "Telora release binary、语言教程和 CLI 手册", "checks": ["bin/telora", "docs/TELORA.md", "docs/TELORA-CLI.md"]},
       "qb-req": {"desc": "QueryBuilder 设计需求", "checks": ["query-builder/GOAL.md", "query-builder/DESIGN.md", "query-builder/telora-deps.json"]},
@@ -186,7 +185,10 @@
         "checks": ["ent-1/QUERY-BUILDER-FEEDBACK.md"],
         "instruction": "阅读 QueryBuilder 公共草案，依据 ent-1/DOMAIN.md 检视真实领域所需算子和 Plan 形状，更新 ent-1/QUERY-BUILDER-FEEDBACK.md，然后提交 qb-feedback.a3。"
       },
-      "qb": {"desc": "Host 批准的 QueryBuilder", "input": ["qb.a1"]},
+      "qb": {
+        "desc": "Host 批准的 QueryBuilder",
+        "input": ["qb.a1", "qb-feedback.a2", "qb-feedback.a3"]
+      },
 
       "edsl-feedback": {"desc": "Host 对 eDSL 的反馈", "checks": ["ontology/FEEDBACK.md"]},
       "edsl.a2": {
@@ -201,7 +203,10 @@
         "checks": ["ent-1/EDSL-FEEDBACK.md"],
         "instruction": "依据 Ent-1 领域需要检视 eDSL 送审版，更新 ent-1/EDSL-FEEDBACK.md，然后提交 edsl-feedback.a3。"
       },
-      "edsl": {"desc": "Host 批准的 eDSL", "input": ["edsl.a2"]},
+      "edsl": {
+        "desc": "Host 批准的 eDSL",
+        "input": ["edsl.a2", "edsl-feedback.a3"]
+      },
 
       "ent-1-model-feedback": {"desc": "Host 对 Ent-1 私有模型的反馈", "checks": ["ent-1/FEEDBACK.md"]},
       "ent-1-model.a3": {
@@ -218,7 +223,10 @@
         "checks": ["ent-1/src/query.telora", "ent-1/src/bin/query-surface.telora", "ent-1/tests/query-surface.telora", "ent-1/QUERY-DESIGNER-TUTORIAL.md", "ent-1/PUBLIC-QUERY-CONTRACT.md"],
         "instruction": "从已批准的同一份私有 EnterpriseKnowledge 建立并验证公共查询 facade，不泄漏物理信息。若 ent-1-query-surface-feedback 已发布，读取 ent-1/QUERY-SURFACE-FEEDBACK.md、修订并重验，然后提交 ent-1-query-surface.a3。"
       },
-      "ent-1-query-surface": {"desc": "Host 批准的 Ent-1 公共查询面", "input": ["ent-1-query-surface.a3"]},
+      "ent-1-query-surface": {
+        "desc": "Host 批准的 Ent-1 公共查询面",
+        "input": ["ent-1-query-surface.a3", "ent-1-query-surface-feedback.a4"]
+      },
 
       "ent-1-query-surface-feedback.a4": {
         "desc": "A4 对公共查询面送审版的检视意见",

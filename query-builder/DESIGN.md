@@ -20,12 +20,17 @@ QueryBuilder 必须拥有封闭、可枚举的标准算子 vocabulary，至少�
 算子能力，例如允许的 join kind、aggregate function 和 scalar function。profile
 是能力声明，不是隐式全局状态，也不得改变算子语义。
 
+SQLite 标准标量 vocabulary 至少包含 `Substr`，严格接受 2 或 3 个参数，分别表达
+`substr(value, start)` 与 `substr(value, start, length)`；参数中的动态值必须进入
+bindings。`PlanProfile.allow_distinct` 只约束聚合调用的 distinct 标志；为 false 时
+验证必须拒绝 distinct aggregate。本轮不引入顶层 `SELECT DISTINCT` 算子。
+
 必须提供纯的验证能力，判断一个 Plan 是否只使用给定 profile 接受的能力。发现
 越界算子、非法结构、无效标识符或未绑定值时使用 `fail!`，不发布部分 Query。
 
 ## Plan
 
-Plan 至少能完整保留：revision、基础数据源、有序投影、filter、按顺序选择的 join
+Plan 至少能完整保留：不透明的 String revision、基础数据源、有序投影、filter、按顺序选择的 join
 及其结构化等值条件、grouping、ordering 和 limit。动态数据只能作为有类型绑定值，
 不能预先 escape 或拼入 SQL。SQL 标识符与用户值必须在类型和 lowering 路径上分开。
 
@@ -62,3 +67,7 @@ grouping、ordering 的规范顺序。非法、profile 不支持或 SQLite 无�
 5. 判断失败来自 profile 越界、Plan 结构还是 Query 转换。
 
 API 名称、模块布局和内部算法不是本契约的一部分。
+
+公共文档必须明确区分 import 边界：package 内部可以使用 `@src/...`，外部依赖者必须
+使用 manifest 中的依赖名（例如 `query-builder/lib.telora`），不得让外部作者照抄
+package 私有的 `@src` 路径。

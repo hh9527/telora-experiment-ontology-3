@@ -29,8 +29,8 @@ A4 intent-1: private text intent -> typed Request -> public lower -> Query
 ```
 
 角色只能提交以自己的角色名结尾的 artifact，例如 A3 只能提交 `.a3`。具体所有权、依赖、
-检查项和 freshness 均由 DAG 引擎检查。每个角色永远循环 pull；无工作或 60 秒超时后
-立即继续。一次 pull 只按声明顺序返回第一个 runnable artifact；角色只完成并提交这个
+检查项和 freshness 均由 DAG 引擎检查。每个角色永远循环 pull；无工作时默认阻塞在
+`pull` 内，不周期性唤醒模型。一次 pull 只按声明顺序返回第一个 runnable artifact；角色只完成并提交这个
 artifact，然后再次 pull。任务不合并。
 
 `pull` 对每个输出分别列出 `output_mtime_ns`，并为每个直接输入列出 `mtime_ns` 和
@@ -44,13 +44,13 @@ checks 中的旧文件仍然存在而直接 submit。
 lang + qb-req -> qb.a1
 qb.a1 -> qb-feedback.a2 / qb-feedback.a3
 Host 整合审查 -> qb-feedback? -> qb.a1 修订
-qb.a1 -> Host 发布 qb
+qb.a1 + qb-feedback.a2 + qb-feedback.a3 -> Host 发布 qb
 
 lang + edsl-req -> lang-learn.a2
 qb + lang-learn.a2 -> edsl.a2
 edsl-feedback? -> edsl.a2 修订
 edsl.a2 -> edsl-feedback.a3
-edsl.a2 -> Host 发布 edsl
+edsl.a2 + edsl-feedback.a3 -> Host 发布 edsl
 
 lang + domain-ent-1 -> lang-learn.a3
 qb + edsl + lang-learn.a3 -> ent-1-model.a3
@@ -58,7 +58,7 @@ ent-1-model.a3 -> Host 发布 ent-1-model
 ent-1-model -> ent-1-query-surface.a3
 ent-1-query-surface.a3 -> ent-1-query-surface-feedback.a4
 Host 整合审查 -> ent-1-query-surface-feedback? -> ent-1-query-surface.a3 修订
-ent-1-query-surface.a3 -> Host 发布 ent-1-query-surface
+ent-1-query-surface.a3 + ent-1-query-surface-feedback.a4 -> Host 发布 ent-1-query-surface
 
 lang + intent-req -> lang-learn.a4
 ent-1-query-surface + lang-learn.a4 -> intent-1.a4
@@ -92,19 +92,21 @@ feedback 状态。
 ## 运行
 
 ```bash
-./oc-run t001
+./oc-run t001 4199
 ```
 
 外部窗口只提供 test-id，并等待 Host 配置。Host 自主选择本计划，在本目录中执行：
 
 ```bash
-../../oc-ctl start t001
+../../oc-ctl test-connect t001
+../../oc-ctl start t001 ontology-3
 ```
 
 使用以下命令观察和干预：
 
 ```bash
 ../../oc-ctl status t001
+../../oc-ctl status t001 --verbose
 ../../oc-ctl stat t001
 ../../oc-ctl update t001 path/in/workspace=path/in/current/directory
 ../../oc-ctl publish t001 artifact
