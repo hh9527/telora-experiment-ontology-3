@@ -105,6 +105,8 @@ Host 同时读取私有 DOMAIN 与 INTENT，检查 A4 的 typed Request 是否�
 Host 验收 `homework.a5` 后才发布 `lic`。真题由 Host 后续投递并发布 `problem`；A5 成功时
 必须交付命令实际返回的规范化 intent、SQL 与 bindings，失败时必须依据最终 Telora 诊断
 解释需求不合法或信息不足。不得把读取实现、手写 SQL 或猜测物理 mapping 计为成功。
+若题面可以合理映射为多个业务语义不同的 intent，A5 必须先反馈所需的用户补充信息，并尽可能给出语义候选及差异。
+Host 不得批准 A5 根据措辞倾向自行消歧义后产生的 Query；候选 intent 能通过 Telora 验证，只能证明它可执行，不能证明用户已确认该业务口径。
 
 ## 过程与反馈
 
