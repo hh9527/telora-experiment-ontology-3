@@ -1,0 +1,533 @@
+# ontology/src/bin/verify.telora
+# 验证：请求覆盖、关系选择（最短路径、共享边合并、同长度字典序最小）、
+# 多 grain base 解析、受控计算维度、有类型维度筛选（等值/范围、未投影筛选维度、
+# join 合并、And 组合）、排序（指标降序 + 维度升序）与 Top N、非空 bindings、
+# 以及 profile 覆盖。
+# 任一断言失败则以 fail! 使本命令非零退出且不发布 output。
+
+import "std/array" as array;
+import "std/string" as string;
+import "query-builder/lib.telora" as qb;
+import "@src/lib.telora" as e;
+
+# ============ 领域类型（虚构，与物流无关） ============
+
+type MeasureId = enum { 'Revenue, 'EnrollmentCount, 'AwardCount };
+type DimensionId = enum { 'CourseCategory, 'LearnerCountry, 'LearnerName, 'BadgeLevel, 'EnrollmentMonth };
+type EntityId = enum { 'Enrollments, 'Learners, 'Courses, 'Badges, 'CertificateAwards };
+type AttributeId = enum {
+  'EnrollmentId, 'AmountPaid, 'LearnerId, 'CourseId, 'CreatedAt,
+  'Country, 'Name, 'Category, 'BadgeId, 'Level, 'CertificateId,
+};
+type RelationId = enum { 'EnrollLearner, 'EnrollCourse, 'LearnerCourse, 'EnrollBadgePrimary, 'EnrollBadgeLate, 'CertCourse };
+type Subject = String;
+type MeasureInput = enum { 'All };
+type DimensionInput = enum { 'All };
+type FilterInput = enum { 'Category(String), 'Country(String), 'Month(String), 'Level(Int) };
+
+# ============ 企业知识（含多条竞争路径、两个 grain 与筛选/排序能力） ============
+
+def make_knowledge: Fn() -> e.Knowledge(MeasureId, DimensionId, EntityId, AttributeId, RelationId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    revision: "verify-v1",
+    entities: [
+      e.entity('Enrollments, e.source_ref("enrollments", "en"), [
+        e.attribute('EnrollmentId, 'Enrollments, "enrollment_id"),
+        e.attribute('AmountPaid, 'Enrollments, "amount_paid"),
+        e.attribute('LearnerId, 'Enrollments, "learner_id"),
+        e.attribute('CourseId, 'Enrollments, "course_id"),
+        e.attribute('CreatedAt, 'Enrollments, "created_at"),
+      ]),
+      e.entity('Learners, e.source_ref("learners", "ln"), [
+        e.attribute('LearnerId, 'Learners, "learner_id"),
+        e.attribute('CourseId, 'Learners, "course_id"),
+        e.attribute('Country, 'Learners, "country"),
+        e.attribute('Name, 'Learners, "name"),
+      ]),
+      e.entity('Courses, e.source_ref("courses", "co"), [
+        e.attribute('CourseId, 'Courses, "course_id"),
+        e.attribute('Category, 'Courses, "category"),
+      ]),
+      e.entity('Badges, e.source_ref("badges", "bd"), [
+        e.attribute('BadgeId, 'Badges, "badge_id"),
+        e.attribute('CourseId, 'Badges, "course_id"),
+        e.attribute('Level, 'Badges, "level"),
+      ]),
+      e.entity('CertificateAwards, e.source_ref("certificate_awards", "ca"), [
+        e.attribute('CertificateId, 'CertificateAwards, "certificate_id"),
+        e.attribute('CourseId, 'CertificateAwards, "course_id"),
+      ]),
+    ],
+    relations: [
+      e.relation('EnrollLearner, 'Enrollments, 'Learners,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'LearnerId), e.attribute_ref('Learners, 'LearnerId))]),
+        'GrainSafe, 'Inner),
+      e.relation('EnrollCourse, 'Enrollments, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+      # 到 Courses 的第二条更长路径（2 边）：最短路径选择必须选上面的 1 边路径
+      e.relation('LearnerCourse, 'Learners, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Learners, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+      # 到 Badges 的两条 1 边并行路径：同长度必须选目录索引序列字典序最小者（Primary 在前）
+      e.relation('EnrollBadgePrimary, 'Enrollments, 'Badges,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'CourseId), e.attribute_ref('Badges, 'CourseId))]),
+        'GrainSafe, 'Inner),
+      e.relation('EnrollBadgeLate, 'Enrollments, 'Badges,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'EnrollmentId), e.attribute_ref('Badges, 'BadgeId))]),
+        'GrainSafe, 'Inner),
+      # 第二个 grain：CertificateAwards -> Courses
+      e.relation('CertCourse, 'CertificateAwards, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('CertificateAwards, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+    ],
+    measures: [
+      e.measure('Revenue, 'Enrollments, 'AmountPaid, 'Aggregate({function: 'Sum, distinct: 'False}), "revenue"),
+      e.measure('EnrollmentCount, 'Enrollments, 'EnrollmentId, 'Aggregate({function: 'Count, distinct: 'False}), "enrollment_count"),
+      e.measure('AwardCount, 'CertificateAwards, 'CertificateId, 'Aggregate({function: 'Count, distinct: 'False}), "award_count"),
+    ],
+    dimensions: [
+      e.dimension('CourseCategory, 'Courses, e.dimension_attribute('Courses, 'Category), "course_category"),
+      e.dimension('LearnerCountry, 'Learners, e.dimension_attribute('Learners, 'Country), "learner_country"),
+      e.dimension('LearnerName, 'Learners, e.dimension_attribute('Learners, 'Name), "learner_name"),
+      e.dimension('BadgeLevel, 'Badges, e.dimension_attribute('Badges, 'Level), "badge_level"),
+      e.dimension('EnrollmentMonth, 'Enrollments,
+        e.dimension_computed(e.computed_expr('Substr, [
+          e.scalar_arg_attribute('Enrollments, 'CreatedAt),
+          e.scalar_arg_literal('Int(1)),
+          e.scalar_arg_literal('Int(7)),
+        ])),
+        "enrollment_month"),
+    ],
+    measure_capabilities: [
+      e.capability('Revenue, fn(subject, input) { input == 'All }),
+      e.capability('EnrollmentCount, fn(subject, input) { input == 'All }),
+      e.capability('AwardCount, fn(subject, input) { input == 'All }),
+    ],
+    dimension_capabilities: [
+      e.capability('CourseCategory, fn(subject, input) { input == 'All }),
+      e.capability('LearnerCountry, fn(subject, input) { input == 'All }),
+      e.capability('LearnerName, fn(subject, input) { input == 'All }),
+      e.capability('BadgeLevel, fn(subject, input) { input == 'All }),
+      e.capability('EnrollmentMonth, fn(subject, input) { input == 'All }),
+    ],
+    filter_capabilities: [
+      e.filter_capability('CourseCategory, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Category(s) => 'String(s),
+          _ => fail!("invalid filter value for CourseCategory", input),
+        }
+      }),
+      e.filter_capability('LearnerCountry, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Country(s) => 'String(s),
+          _ => fail!("invalid filter value for LearnerCountry", input),
+        }
+      }),
+      e.filter_capability('EnrollmentMonth, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Month(s) => 'String(s),
+          _ => fail!("invalid filter value for EnrollmentMonth", input),
+        }
+      }),
+      e.filter_capability('BadgeLevel, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Level(i) => 'Int(i),
+          _ => fail!("invalid filter value for BadgeLevel", input),
+        }
+      }),
+    ],
+    plan_profile: qb.with_scalar_functions(
+      qb.with_aggregate_functions(
+        qb.with_join_kinds(qb.standard_profile, ['Inner]),
+        ['Sum, 'Count]),
+      ['Substr, 'Eq, 'Ge, 'Le, 'And]),
+  }
+};
+
+# ============ 请求 ============
+
+def req1: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "verify@example.com", input: 'All},
+      {id: 'EnrollmentCount, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "verify@example.com", input: 'All},
+      {id: 'LearnerCountry, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 两个维度都在 Learners 上：共享边 EnrollLearner 只能出现一次
+def req2: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'EnrollmentCount, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'LearnerCountry, subject: "verify@example.com", input: 'All},
+      {id: 'LearnerName, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 维度在 Badges 上：两条 1 边路径，必须选目录索引序列字典序最小者（EnrollBadgePrimary）
+def req3: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'EnrollmentCount, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'BadgeLevel, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 多 grain：measure 在 CertificateAwards，base grain 必须是它而不是 Enrollments
+def req4: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'AwardCount, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 受控计算维度：EnrollmentMonth = substr(en.created_at, 1, 7)
+def req5: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'EnrollmentCount, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'EnrollmentMonth, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 等值筛选 + 未投影筛选维度：CourseCategory 不在 projections/group_by 中，
+# 仍必须走安全路径（join co）并授权。
+def req6: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'EnrollmentCount, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+      {id: 'CourseCategory, subject: "verify@example.com", input: 'Category("Analytics"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 范围筛选：同一维度多个筛选（Ge + Le），And 组合；Top N = 7
+def req7: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'EnrollmentCount, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+      {id: 'EnrollmentMonth, subject: "verify@example.com", input: 'Month("2026-04"), op: 'Ge},
+      {id: 'EnrollmentMonth, subject: "verify@example.com", input: 'Month("2026-06"), op: 'Le},
+    ],
+    ordering: [],
+    limit: 'Some(7),
+  }
+};
+
+# 排序：指标降序 + 维度升序（稳定 tie-break）+ Top N = 10
+def req8: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [
+      {target: 'Measure('Revenue), direction: 'Desc},
+      {target: 'Dimension('CourseCategory), direction: 'Asc},
+    ],
+    limit: 'Some(10),
+  }
+};
+
+# ============ 断言工具 ============
+
+def require: Fn(Bool, String) -> Bool = fn(ok, message) {
+  if ok { 'True } else { fail!(message) }
+};
+
+def projection_aliases: Fn(qb.Plan) -> Array(String) = fn(plan) {
+  array.map(plan.projections, fn(p) { p.alias.text })
+};
+
+def join_right_aliases: Fn(qb.Plan) -> Array(String) = fn(plan) {
+  array.map(plan.joins, fn(j) { j.right.alias.text })
+};
+
+def first_group_column: Fn(qb.Plan) -> Option(String) = fn(plan) {
+  match array.get(plan.group_by, 0) {
+    'Some(expr) => match expr {
+      'Column(ref) => 'Some(ref.column.text),
+      _ => 'None,
+    },
+    'None => 'None,
+  }
+};
+
+def first_join_left_column: Fn(qb.Plan) -> Option(String) = fn(plan) {
+  match array.get(plan.joins, 0) {
+    'Some(join) => match array.get(join.on, 0) {
+      'Some(cond) => 'Some(cond.left.column.text),
+      'None => 'None,
+    },
+    'None => 'None,
+  }
+};
+
+def join_kinds: Fn(qb.Plan) -> Array(String) = fn(plan) {
+  array.map(plan.joins, fn(j) {
+    match j.kind {
+      'Inner => "inner",
+      'Left => "left",
+    }
+  })
+};
+
+def last_projection_expr_is_substr: Fn(qb.Plan) -> Bool = fn(plan) {
+  match array.get(plan.projections, array.length(plan.projections) - 1) {
+    'Some(proj) => match proj.expr {
+      'ScalarCall(call) => call.function == 'Substr,
+      _ => 'False,
+    },
+    'None => 'False,
+  }
+};
+
+# 顶层 filter 表达式是否为指定标量函数
+def is_filter_function: Fn(qb.Plan, qb.ScalarFunction) -> Bool = fn(plan, target) {
+  match plan.filter {
+    'None => 'False,
+    'Some(expr) => match expr {
+      'ScalarCall(call) => call.function == target,
+      _ => 'False,
+    },
+  }
+};
+
+def filter_arg_at: Fn(qb.Plan, Int) -> Option(qb.Expr) = fn(plan, index) {
+  match plan.filter {
+    'None => 'None,
+    'Some(expr) => match expr {
+      'ScalarCall(call) => array.get(call.args, index),
+      _ => 'None,
+    },
+  }
+};
+
+# filter 第 index 个实参是否为指定标量函数（用于 And 的子条件）
+def is_filter_arg_function: Fn(qb.Plan, Int, qb.ScalarFunction) -> Bool = fn(plan, index, target) {
+  match filter_arg_at(plan, index) {
+    'Some(arg) => match arg {
+      'ScalarCall(inner) => inner.function == target,
+      _ => 'False,
+    },
+    'None => 'False,
+  }
+};
+
+def filter_eq_left_source: Fn(qb.Plan) -> Option(String) = fn(plan) {
+  match filter_arg_at(plan, 0) {
+    'Some(arg) => match arg {
+      'Column(ref) => 'Some(ref.source.text),
+      _ => 'None,
+    },
+    'None => 'None,
+  }
+};
+
+def filter_eq_right_literal: Fn(qb.Plan) -> Option(qb.Val) = fn(plan) {
+  match filter_arg_at(plan, 1) {
+    'Some(arg) => match arg {
+      'Literal(value) => 'Some(value),
+      _ => 'None,
+    },
+    'None => 'None,
+  }
+};
+
+def ordering_expr_text: Fn(qb.Plan) -> Array(String) = fn(plan) {
+  array.map(plan.ordering, fn(item) {
+    match item.expr {
+      'AggCall(call) => match call.function {
+        'Count => "count",
+        'Sum => "sum",
+        'Avg => "avg",
+        'Min => "min",
+        'Max => "max",
+      },
+      'Column(ref) => `col:\{ref.source.text}.\{ref.column.text}`,
+      'ScalarCall(call) => match call.function {
+        'Substr => "substr",
+        _ => "scalar",
+      },
+      'Literal(_) => "literal",
+    }
+  })
+};
+
+def ordering_directions: Fn(qb.Plan) -> Array(String) = fn(plan) {
+  array.map(plan.ordering, fn(item) {
+    match item.direction {
+      'Asc => "asc",
+      'Desc => "desc",
+    }
+  })
+};
+
+def issue_text: Fn(qb.ValidationIssue) -> String = fn(issue) {
+  match issue {
+    'Profile(message) => message,
+    'Structure(message) => message,
+    'Identifier(message) => message,
+    'Transform(message) => message,
+  }
+};
+
+def profile_for: Fn() -> qb.PlanProfile = fn() {
+  qb.with_scalar_functions(
+    qb.with_aggregate_functions(
+      qb.with_join_kinds(qb.standard_profile, ['Inner]),
+      ['Sum, 'Count]),
+    ['Substr, 'Eq, 'Ge, 'Le, 'And])
+};
+
+def verify_plan: Fn(String, qb.Plan) -> Bool = fn(name, plan) {
+  let check_projection = require(array.length(plan.projections) > 0, `\{name}: plan has no projections`);
+  match qb.validate(plan, profile_for()) {
+    'Ok(_) => 'True,
+    'Err(issue) => fail!(`\{name}: profile coverage failed: \{issue_text(issue)}`),
+  }
+};
+
+export def output: String = do {
+  let knowledge = make_knowledge();
+  let creator = e.make_query_creator(knowledge);
+
+  # --- 断言 1：请求覆盖（每个请求恰有一个投影，顺序一致；grouping 与维度一致） ---
+  let plan1 = creator(req1());
+  let aliases1 = projection_aliases(plan1);
+  let check1 = require(
+    aliases1 == ["revenue", "enrollment_count", "course_category", "learner_country"],
+    "coverage: projection aliases/order mismatch");
+  let check2 = require(array.length(plan1.group_by) == 2, "coverage: group_by count mismatch");
+  let check3 = require(first_group_column(plan1) == 'Some("category"), "coverage: first group column mismatch");
+
+  # --- 断言 2：关系选择（最短边数优先：Courses 走 1 边直接路径，不走 2 边 LearnerCourse） ---
+  let check4 = require(join_right_aliases(plan1) == ["co", "ln"], "relations: shortest-path join order mismatch");
+  let check5 = require(join_kinds(plan1) == ["inner", "inner"], "relations: join kinds mismatch");
+
+  # --- 断言 3：共享边只保留首次出现（两个 Learners 维度共享 EnrollLearner） ---
+  let plan2 = creator(req2());
+  let check6 = require(join_right_aliases(plan2) == ["ln"], "relations: shared edge must appear once");
+  let check7 = require(array.length(plan2.projections) == 3, "coverage: req2 projection count mismatch");
+
+  # --- 断言 4：同长度按目录索引序列字典序最小（Badges 选 EnrollBadgePrimary） ---
+  let plan3 = creator(req3());
+  let check8 = require(join_right_aliases(plan3) == ["bd"], "relations: badge join alias mismatch");
+  let check9 = require(first_join_left_column(plan3) == 'Some("course_id"), "relations: lex-smallest edge not chosen");
+
+  # --- 断言 5：多 grain base 解析（measure 在 CertificateAwards，base 必须是它） ---
+  let plan4 = creator(req4());
+  let check10 = require(plan4.source.alias.text == "ca", "grain: base source must be certificate_awards");
+  let check11 = require(join_right_aliases(plan4) == ["co"], "grain: certificate grain must join courses via CertCourse");
+  let check12 = require(
+    projection_aliases(plan4) == ["award_count", "course_category"],
+    "grain: projection aliases mismatch for certificate grain");
+
+  # --- 断言 6：受控计算维度（substr -> ScalarCall + 字面量成为 binding） ---
+  let plan5 = creator(req5());
+  let check13 = require(last_projection_expr_is_substr(plan5), "computed: enrollment_month must be a Substr scalar call");
+  let query5 = qb.transform_sqlite(plan5, knowledge.plan_profile);
+  let expected5: Array(qb.Val) = ['Int(1), 'Int(7), 'Int(1), 'Int(7)];
+  let check14 = require(query5.bindings == expected5, "computed: substr literals must become bindings");
+
+  # --- 断言 7：等值筛选 + 未投影筛选维度（CourseCategory 不在 projections/group_by，join co 合并） ---
+  let plan6 = creator(req6());
+  let check15 = require(projection_aliases(plan6) == ["enrollment_count"], "filter: non-projected filter dimension must not be projected");
+  let check16 = require(array.length(plan6.group_by) == 0, "filter: non-projected filter dimension must not be grouped");
+  let check17 = require(join_right_aliases(plan6) == ["co"], "filter: filter dimension must merge necessary join");
+  let check18 = require(is_filter_function(plan6, 'Eq), "filter: top-level filter must be Eq");
+  let check19 = require(filter_eq_left_source(plan6) == 'Some("co"), "filter: eq left side must reference join alias");
+  let check20 = match filter_eq_right_literal(plan6) {
+    'Some(value) => require(value == 'String("Analytics"), "filter: value must become qb.Val literal"),
+    'None => fail!("filter: missing eq right literal"),
+  };
+  let query6 = qb.transform_sqlite(plan6, knowledge.plan_profile);
+  let expected6: Array(qb.Val) = ['String("Analytics")];
+  let check21 = require(query6.bindings == expected6, "filter: filter value must enter bindings");
+
+  # --- 断言 8：范围筛选（同一维度 Ge + Le，And 组合）+ Top N ---
+  let plan7 = creator(req7());
+  let check22 = require(is_filter_function(plan7, 'And), "filter: multiple filters must combine with And");
+  let check23 = require(is_filter_arg_function(plan7, 0, 'Ge), "filter: first condition must be Ge");
+  let check24 = require(is_filter_arg_function(plan7, 1, 'Le), "filter: second condition must be Le");
+  let check25 = require(plan7.limit == 'Some(7), "filter: limit must be preserved");
+  let query7 = qb.transform_sqlite(plan7, knowledge.plan_profile);
+  let expected7: Array(qb.Val) = ['Int(1), 'Int(7), 'String("2026-04"), 'Int(1), 'Int(7), 'String("2026-06"), 'Int(7)];
+  let check26 = require(query7.bindings == expected7, "filter: range literals and limit must enter bindings in order");
+
+  # --- 断言 9：排序（指标降序 + 维度升序）+ Top N ---
+  let plan8 = creator(req8());
+  let check27 = require(ordering_expr_text(plan8) == ["sum", "col:co.category"], "ordering: must order by requested measure then requested dimension");
+  let check28 = require(ordering_directions(plan8) == ["desc", "asc"], "ordering: metric desc + dimension asc tie-break mismatch");
+  let check29 = require(plan8.limit == 'Some(10), "ordering: top n mismatch");
+  let query8 = qb.transform_sqlite(plan8, knowledge.plan_profile);
+  let expected8: Array(qb.Val) = ['Int(10)];
+  let check30 = require(query8.bindings == expected8, "ordering: limit must enter bindings");
+
+  # --- 断言 10：profile 覆盖（全部 Plan 通过 knowledge profile 验证） ---
+  let check31 = verify_plan("plan1", plan1);
+  let check32 = verify_plan("plan2", plan2);
+  let check33 = verify_plan("plan3", plan3);
+  let check34 = verify_plan("plan4", plan4);
+  let check35 = verify_plan("plan5", plan5);
+  let check36 = verify_plan("plan6", plan6);
+  let check37 = verify_plan("plan7", plan7);
+  let check38 = verify_plan("plan8", plan8);
+
+  string.join([
+    "verify ok",
+    "coverage: projections/group_by match requests",
+    "relations: shortest path, shared-edge merge, lex-smallest tie-break ok",
+    "grain: request measures decide base grain (multi-grain knowledge) ok",
+    "computed: substr dimension lowers to ScalarCall with literal bindings ok",
+    "filter: equality and range filters lower to Eq/Ge/Le with And, values become bindings ok",
+    "filter: non-projected filter dimension is authorized, path-selected and joined ok",
+    "ordering: requested measure desc + dimension asc + top n ok",
+    "profile: all plans accepted by knowledge plan_profile",
+  ], "\n")
+};

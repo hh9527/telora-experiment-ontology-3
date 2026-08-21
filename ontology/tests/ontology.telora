@@ -1,1 +1,338 @@
-export def output = "add focused ontology validation";
+# ontology/tests/ontology.telora
+# 公共类型与模块契约检查：构造 EnterpriseKnowledge，验证 lowering、多 grain base、
+# 受控计算维度、有类型维度筛选、排序与 Top N、以及 profile 边界。
+# 任一断言不成立都会 fail!，使 check 返回 error。
+
+import "std/array" as array;
+import "std/string" as string;
+import "query-builder/lib.telora" as qb;
+import "@src/lib.telora" as e;
+
+type MeasureId = enum { 'Revenue, 'AwardCount };
+type DimensionId = enum { 'CourseCategory, 'EnrollmentMonth, 'LearnerCountry };
+type EntityId = enum { 'Enrollments, 'Learners, 'Courses, 'CertificateAwards };
+type AttributeId = enum { 'EnrollmentId, 'AmountPaid, 'CourseId, 'Category, 'CertificateId, 'CreatedAt, 'Country, 'LearnerId };
+type RelationId = enum { 'EnrollCourse, 'CertCourse, 'EnrollLearner };
+type Subject = String;
+type MeasureInput = enum { 'All };
+type DimensionInput = enum { 'All };
+type FilterInput = enum { 'Category(String), 'Month(String), 'Country(String) };
+
+def make_knowledge: Fn() -> e.Knowledge(MeasureId, DimensionId, EntityId, AttributeId, RelationId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    revision: "test-v1",
+    entities: [
+      e.entity('Enrollments, e.source_ref("enrollments", "en"), [
+        e.attribute('EnrollmentId, 'Enrollments, "enrollment_id"),
+        e.attribute('AmountPaid, 'Enrollments, "amount_paid"),
+        e.attribute('CourseId, 'Enrollments, "course_id"),
+        e.attribute('CreatedAt, 'Enrollments, "created_at"),
+        e.attribute('LearnerId, 'Enrollments, "learner_id"),
+      ]),
+      e.entity('Learners, e.source_ref("learners", "ln"), [
+        e.attribute('LearnerId, 'Learners, "learner_id"),
+        e.attribute('Country, 'Learners, "country"),
+      ]),
+      e.entity('Courses, e.source_ref("courses", "co"), [
+        e.attribute('CourseId, 'Courses, "course_id"),
+        e.attribute('Category, 'Courses, "category"),
+      ]),
+      e.entity('CertificateAwards, e.source_ref("certificate_awards", "ca"), [
+        e.attribute('CertificateId, 'CertificateAwards, "certificate_id"),
+        e.attribute('CourseId, 'CertificateAwards, "course_id"),
+      ]),
+    ],
+    relations: [
+      e.relation('EnrollLearner, 'Enrollments, 'Learners,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'LearnerId), e.attribute_ref('Learners, 'LearnerId))]),
+        'GrainSafe, 'Inner),
+      e.relation('EnrollCourse, 'Enrollments, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+      e.relation('CertCourse, 'CertificateAwards, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('CertificateAwards, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+    ],
+    measures: [
+      e.measure('Revenue, 'Enrollments, 'AmountPaid, 'Aggregate({function: 'Sum, distinct: 'False}), "revenue"),
+      e.measure('AwardCount, 'CertificateAwards, 'CertificateId, 'Aggregate({function: 'Count, distinct: 'False}), "award_count"),
+    ],
+    dimensions: [
+      e.dimension('CourseCategory, 'Courses, e.dimension_attribute('Courses, 'Category), "course_category"),
+      e.dimension('LearnerCountry, 'Learners, e.dimension_attribute('Learners, 'Country), "learner_country"),
+      e.dimension('EnrollmentMonth, 'Enrollments,
+        e.dimension_computed(e.computed_expr('Substr, [
+          e.scalar_arg_attribute('Enrollments, 'CreatedAt),
+          e.scalar_arg_literal('Int(1)),
+          e.scalar_arg_literal('Int(7)),
+        ])),
+        "enrollment_month"),
+    ],
+    measure_capabilities: [
+      e.capability('Revenue, fn(subject, input) { input == 'All }),
+      e.capability('AwardCount, fn(subject, input) { input == 'All }),
+    ],
+    dimension_capabilities: [
+      e.capability('CourseCategory, fn(subject, input) { input == 'All }),
+      e.capability('LearnerCountry, fn(subject, input) { input == 'All }),
+      e.capability('EnrollmentMonth, fn(subject, input) { input == 'All }),
+    ],
+    filter_capabilities: [
+      e.filter_capability('CourseCategory, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Category(s) => 'String(s),
+          _ => fail!("invalid filter value for CourseCategory", input),
+        }
+      }),
+      e.filter_capability('EnrollmentMonth, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Month(s) => 'String(s),
+          _ => fail!("invalid filter value for EnrollmentMonth", input),
+        }
+      }),
+      e.filter_capability('LearnerCountry, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Country(s) => 'String(s),
+          _ => fail!("invalid filter value for LearnerCountry", input),
+        }
+      }),
+    ],
+    plan_profile: qb.with_scalar_functions(
+      qb.with_aggregate_functions(
+        qb.with_join_kinds(qb.standard_profile, ['Inner]),
+        ['Sum, 'Count]),
+      ['Substr, 'Eq, 'Ge, 'Le, 'And]),
+  }
+};
+
+def make_request: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "test@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "test@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+def make_cert_request: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'AwardCount, subject: "test@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "test@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+def make_computed_request: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "test@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'EnrollmentMonth, subject: "test@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+def make_filter_request: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "test@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+      {id: 'EnrollmentMonth, subject: "test@example.com", input: 'Month("2026-04"), op: 'Ge},
+      {id: 'EnrollmentMonth, subject: "test@example.com", input: 'Month("2026-06"), op: 'Le},
+      {id: 'CourseCategory, subject: "test@example.com", input: 'Category("Analytics"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'Some(5),
+  }
+};
+
+def make_order_request: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "test@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "test@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [
+      {target: 'Measure('Revenue), direction: 'Desc},
+      {target: 'Dimension('CourseCategory), direction: 'Asc},
+    ],
+    limit: 'Some(10),
+  }
+};
+
+def require: Fn(Bool, String) -> Bool = fn(ok, message) {
+  if ok { 'True } else { fail!(message) }
+};
+
+# 契约 1：make_query_creator 返回 Fn(QueryRequest) -> qb.Plan，且 String revision 原样保留
+export def contract_revision: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_request());
+  require(plan.revision == "test-v1", "contract: plan revision mismatch")
+};
+
+# 契约 2：每个请求恰有一个投影，顺序为 measures 后 dimensions（请求覆盖）
+export def contract_projection_coverage: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_request());
+  let aliases = array.map(plan.projections, fn(p) { p.alias.text });
+  require(aliases == ["revenue", "course_category"], "contract: projection aliases/order mismatch")
+};
+
+# 契约 3：维度 grouping 与维度一致，join 为关系 mapping 的结构化等值条件
+export def contract_grouping_and_join: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_request());
+  let require_group = require(array.length(plan.group_by) == 1, "contract: group_by count mismatch");
+  let join = match array.get(plan.joins, 0) {
+    'Some(j) => j,
+    'None => fail!("contract: expected one join"),
+  };
+  let on_ok = match array.get(join.on, 0) {
+    'Some(cond) => require(
+      cond.left.column.text == "course_id" && cond.right.column.text == "course_id",
+      "contract: join condition mismatch"),
+    'None => fail!("contract: join has no condition"),
+  };
+  require(join.right.alias.text == "co", "contract: join right alias mismatch")
+};
+
+# 契约 4：Plan 通过知识声明的 plan_profile 验证（profile 覆盖）
+export def contract_profile: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_request());
+  match qb.validate(plan, knowledge.plan_profile) {
+    'Ok(_) => 'True,
+    'Err(issue) => fail!("contract: plan rejected by knowledge profile"),
+  }
+};
+
+# 契约 5：成功示例可端到端得到确定性的 Query（sql 参数化，bindings 与占位符一致）
+export def contract_query: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_request());
+  let query = qb.transform_sqlite(plan, knowledge.plan_profile);
+  let sql_ok = require(
+    query.sql == "SELECT sum(en.amount_paid) AS revenue, co.category AS course_category FROM enrollments AS en INNER JOIN courses AS co ON en.course_id = co.course_id GROUP BY co.category",
+    "contract: unexpected SQL output");
+  require(array.length(query.bindings) == 0, "contract: unexpected bindings")
+};
+
+# 契约 6：多 grain——请求的 measure 决定 base grain（AwardCount -> CertificateAwards）
+export def contract_multi_grain: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_cert_request());
+  let base_ok = require(plan.source.alias.text == "ca", "contract: certificate grain base source mismatch");
+  let aliases = array.map(plan.projections, fn(p) { p.alias.text });
+  require(aliases == ["award_count", "course_category"], "contract: certificate grain projections mismatch")
+};
+
+# 契约 7：受控计算维度 lower 为 ScalarCall，字面量成为 binding
+export def contract_computed_dimension: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_computed_request());
+  let last = match array.get(plan.projections, array.length(plan.projections) - 1) {
+    'Some(p) => p,
+    'None => fail!("contract: missing computed projection"),
+  };
+  let expr_ok = match last.expr {
+    'ScalarCall(call) => require(call.function == 'Substr, "contract: computed dimension must be Substr"),
+    _ => fail!("contract: computed dimension must be ScalarCall"),
+  };
+  let query = qb.transform_sqlite(plan, knowledge.plan_profile);
+  let expected_bindings: Array(qb.Val) = ['Int(1), 'Int(7), 'Int(1), 'Int(7)];
+  require(query.bindings == expected_bindings, "contract: computed literals must become bindings")
+};
+
+# 契约 8：有类型维度筛选——And 组合、Eq/Ge/Le、值进入 bindings、Top N
+export def contract_filter: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_filter_request());
+  let filter_ok = match plan.filter {
+    'Some(expr) => match expr {
+      'ScalarCall(call) => require(
+        call.function == 'And && array.length(call.args) == 2,
+        "contract: filters must combine with And"),
+      _ => fail!("contract: filter must be a scalar call"),
+    },
+    'None => fail!("contract: filter must be present"),
+  };
+  let limit_ok = require(plan.limit == 'Some(5), "contract: limit mismatch");
+  let query = qb.transform_sqlite(plan, knowledge.plan_profile);
+  let expected_bindings: Array(qb.Val) = [
+    'Int(1), 'Int(7), 'String("2026-04"),
+    'Int(1), 'Int(7), 'String("2026-06"),
+    'String("Analytics"),
+    'Int(5),
+  ];
+  require(query.bindings == expected_bindings, "contract: filter/limit literals must enter bindings in order")
+};
+
+# 契约 9：排序只引用已请求目标（指标降序 + 维度升序），Top N 写入 limit
+export def contract_ordering: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)(make_order_request());
+  let order_ok = require(array.length(plan.ordering) == 2, "contract: ordering count mismatch");
+  let first = match array.get(plan.ordering, 0) {
+    'Some(item) => item,
+    'None => fail!("contract: missing first order item"),
+  };
+  let first_ok = match first.expr {
+    'AggCall(call) => require(
+      call.function == 'Sum && first.direction == 'Desc,
+      "contract: first order item must be sum desc"),
+    _ => fail!("contract: first order item must be aggregate"),
+  };
+  let second = match array.get(plan.ordering, 1) {
+    'Some(item) => item,
+    'None => fail!("contract: missing second order item"),
+  };
+  let second_ok = match second.expr {
+    'Column(ref) => require(
+      ref.source.text == "co" && ref.column.text == "category" && second.direction == 'Asc,
+      "contract: second order item must be dimension asc"),
+    _ => fail!("contract: second order item must be column"),
+  };
+  require(plan.limit == 'Some(10), "contract: ordering limit mismatch")
+};
+
+# 契约 10：未投影筛选维度——筛选维度不在 projections/group_by，仍走安全路径并合并 join
+export def contract_filter_non_projected: Bool = do {
+  let knowledge = make_knowledge();
+  let plan = e.make_query_creator(knowledge)({
+    measures: [
+      {id: 'Revenue, subject: "test@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+      {id: 'LearnerCountry, subject: "test@example.com", input: 'Country("US"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+  });
+  let aliases = array.map(plan.projections, fn(p) { p.alias.text });
+  let proj_ok = require(aliases == ["revenue"], "contract: non-projected filter dimension leaked into projections");
+  let group_ok = require(array.length(plan.group_by) == 0, "contract: non-projected filter dimension leaked into group_by");
+  let join_aliases = array.map(plan.joins, fn(j) { j.right.alias.text });
+  require(join_aliases == ["ln"], "contract: non-projected filter dimension join missing")
+};

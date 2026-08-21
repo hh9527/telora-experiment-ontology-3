@@ -1,0 +1,31 @@
+import "@src/request.telora" { legal_request };
+import "ent-1/query.telora" as q;
+import "std/array" as array;
+import "std/codec" as codec;
+import "std/result" as result;
+import "std/value" { Value };
+
+# 验证公共结果契约：
+# 1. 确定性：同一 Request 重复 lower 得到逐字节相同的 sql 与相同顺序的 bindings；
+# 2. Query 形状：bindings 的每个元素都是 Val 的四个 variant 之一（'String/'Int/'Float/'Bool，
+#    不含 Bytes；若 Val 出现其他 variant，下面的穷尽 match 会在检查期失败）；
+# 3. 结果可编码：Query 可通过 codec 编码为 Value。
+export def output: String = do {
+    let first = q.lower(legal_request);
+    let second = q.lower(legal_request);
+    let deterministic = first.sql == second.sql && first.bindings == second.bindings;
+    let bindings_are_vals = array.all(first.bindings, fn(value) {
+        match value {
+            'String(_) => 'True,
+            'Int(_) => 'True,
+            'Float(_) => 'True,
+            'Bool(_) => 'True,
+        }
+    });
+    let encoded = codec.encode(Value, first) |> result.unwrap;
+    if deterministic && bindings_are_vals {
+        "verify ok"
+    } else {
+        fail!("query result contract verification failed", legal_request, first, second)
+    }
+};

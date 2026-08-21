@@ -1,0 +1,281 @@
+# Pure validation for QueryBuilder plans.
+#
+# validate(plan, profile) decides whether a Plan is well-formed and only uses
+# capabilities accepted by the profile. It never uses fail! and never emits a
+# partial Query; it returns a Result with a categorized ValidationIssue.
+import "std/array" as array;
+import "@src/types.telora" {
+    Plan, PlanProfile, ValidationIssue, Ident, ColumnRef, Expr, AggCall,
+    ScalarCall, Join, is_sql_identifier, max_expr_depth,
+};
+import "@src/profile.telora" {
+    join_kind_allowed, scalar_function_allowed, aggregate_function_allowed,
+};
+
+# First failed check message, or 'None when every check passed. Checks are
+# evaluated left to right; the first failure wins, so results are
+# deterministic.
+def first_failure: Fn(Array(Tuple([Bool, String]))) -> Option(String) = fn(checks) {
+    let failures = array.fold(checks, [], fn(acc, check) {
+        if check.0 { acc } else { array.push(acc, check.1) }
+    });
+    array.get(failures, 0)
+};
+
+# --- Expression traversal -----------------------------------------------------
+
+def expr_column_refs: Fn(Expr) -> Array(ColumnRef) = fn(expr) {
+    match expr {
+        'Column(ref) => [ref],
+        'Literal(_) => [],
+        'ScalarCall(call) => array.concat(array.map(call.args, expr_column_refs)),
+        'AggCall(call) => match call.arg {
+            'None => [],
+            'Some(arg) => expr_column_refs(arg),
+        },
+    }
+};
+
+def expr_agg_calls: Fn(Expr) -> Array(AggCall) = fn(expr) {
+    match expr {
+        'Column(_) => [],
+        'Literal(_) => [],
+        'ScalarCall(call) => array.concat(array.map(call.args, expr_agg_calls)),
+        'AggCall(call) => {
+            let child_calls = match call.arg {
+                'None => [],
+                'Some(arg) => expr_agg_calls(arg),
+            };
+            array.push(child_calls, call)
+        },
+    }
+};
+
+def expr_scalar_calls: Fn(Expr) -> Array(ScalarCall) = fn(expr) {
+    match expr {
+        'Column(_) => [],
+        'Literal(_) => [],
+        'ScalarCall(call) => {
+            let child_calls = array.concat(array.map(call.args, expr_scalar_calls));
+            array.push(child_calls, call)
+        },
+        'AggCall(call) => match call.arg {
+            'None => [],
+            'Some(arg) => expr_scalar_calls(arg),
+        },
+    }
+};
+
+def expr_depth: Fn(Expr) -> Int = fn(expr) {
+    match expr {
+        'Column(_) => 1,
+        'Literal(_) => 1,
+        'ScalarCall(call) => 1 + max_exprs_depth(call.args),
+        'AggCall(call) => match call.arg {
+            'None => 1,
+            'Some(arg) => 1 + expr_depth(arg),
+        },
+    }
+};
+
+def max_exprs_depth: Fn(Array(Expr)) -> Int = fn(exprs) {
+    let depths = array.map(exprs, expr_depth);
+    array.fold(depths, 0, fn(acc, depth) {
+        if depth > acc { depth } else { acc }
+    })
+};
+
+# Every expression anywhere in the plan: projections, filter, GROUP BY,
+# ORDER BY. Join conditions are column pairs and carry no expressions.
+def plan_exprs: Fn(Plan) -> Array(Expr) = fn(plan) {
+    let projection_exprs = array.map(plan.projections, fn(proj) { proj.expr });
+    let filter_exprs = match plan.filter {
+        'Some(expr) => [expr],
+        'None => [],
+    };
+    let order_exprs = array.map(plan.ordering, fn(item) { item.expr });
+    array.concat([projection_exprs, filter_exprs, plan.group_by, order_exprs])
+};
+
+def plan_column_refs: Fn(Plan) -> Array(ColumnRef) = fn(plan) {
+    let expr_refs = array.concat(array.map(plan_exprs(plan), expr_column_refs));
+    let join_refs = array.concat(array.map(plan.joins, fn(join) {
+        array.concat(array.map(join.on, fn(condition) { [condition.left, condition.right] }))
+    }));
+    array.concat([expr_refs, join_refs])
+};
+
+def plan_agg_calls: Fn(Plan) -> Array(AggCall) = fn(plan) {
+    array.concat(array.map(plan_exprs(plan), expr_agg_calls))
+};
+
+def plan_scalar_calls: Fn(Plan) -> Array(ScalarCall) = fn(plan) {
+    array.concat(array.map(plan_exprs(plan), expr_scalar_calls))
+};
+
+# --- Identifier checks ----------------------------------------------------------
+
+def column_identifiers_valid: Fn(ColumnRef) -> Bool = fn(ref) {
+    is_sql_identifier(ref.source.text) && is_sql_identifier(ref.column.text)
+};
+
+def check_identifiers: Fn(Plan) -> Result(Plan, ValidationIssue) = fn(plan) {
+    let checks: Array(Tuple([Bool, String])) = [
+        (is_sql_identifier(plan.source.name.text),
+         `source table name "\{plan.source.name.text}" is not a valid SQL identifier`),
+        (is_sql_identifier(plan.source.alias.text),
+         `source alias "\{plan.source.alias.text}" is not a valid SQL identifier`),
+        (array.all(plan.projections, fn(proj) { is_sql_identifier(proj.alias.text) }),
+         "a projection alias is not a valid SQL identifier"),
+        (array.all(plan_column_refs(plan), column_identifiers_valid),
+         "a column reference contains an invalid SQL identifier"),
+        (array.all(plan.joins, fn(join) {
+            is_sql_identifier(join.right.name.text) && is_sql_identifier(join.right.alias.text)
+        }),
+         "a join source contains an invalid SQL identifier"),
+    ];
+    match first_failure(checks) {
+        'Some(message) => 'Err('Identifier(message)),
+        'None => 'Ok(plan),
+    }
+};
+
+# --- Structure checks -------------------------------------------------------------
+
+def limit_valid: Fn(Option(Int)) -> Bool = fn(limit) {
+    match limit {
+        'Some(n) => n >= 0,
+        'None => 'True,
+    }
+};
+
+def exprs_within_depth: Fn(Plan) -> Bool = fn(plan) {
+    array.all(plan_exprs(plan), fn(expr) { expr_depth(expr) <= max_expr_depth })
+};
+
+def agg_call_valid: Fn(AggCall) -> Bool = fn(call) {
+    match call.arg {
+        'None => call.function == 'Count && !call.distinct,
+        'Some(_) => 'True,
+    }
+};
+
+def scalar_arity_valid: Fn(ScalarCall) -> Bool = fn(call) {
+    let n = array.length(call.args);
+    match call.function {
+        'Abs => n == 1,
+        'Round => n == 1 || n == 2,
+        'Floor => n == 1,
+        'Ceil => n == 1,
+        'Lower => n == 1,
+        'Upper => n == 1,
+        'Length => n == 1,
+        'Trim => n == 1,
+        'Substr => n == 2 || n == 3,
+        'Coalesce => n >= 1,
+        'Eq => n == 2,
+        'Ne => n == 2,
+        'Lt => n == 2,
+        'Le => n == 2,
+        'Gt => n == 2,
+        'Ge => n == 2,
+        'And => n == 2,
+        'Or => n == 2,
+        'Not => n == 1,
+    }
+};
+
+# Join aliases must be unique and must not collide with the base source alias.
+def join_aliases_unique: Fn(Plan) -> Bool = fn(plan) {
+    let aliases = array.map(plan.joins, fn(join) { join.right.alias });
+    let distinct = array.fold(aliases, [], fn(acc, alias) {
+        if array.any(acc, fn(existing) { existing == alias }) {
+            acc
+        } else {
+            array.push(acc, alias)
+        }
+    });
+    array.length(distinct) == array.length(aliases)
+        && !array.any(aliases, fn(alias) { alias == plan.source.alias })
+};
+
+# Every column reference must point at the base source alias or a join alias.
+def column_sources_known: Fn(Plan) -> Bool = fn(plan) {
+    let aliases = array.fold(plan.joins, [plan.source.alias], fn(acc, join) {
+        array.push(acc, join.right.alias)
+    });
+    array.all(plan_column_refs(plan), fn(ref) {
+        array.any(aliases, fn(alias) { alias == ref.source })
+    })
+};
+
+def check_structure: Fn(Plan) -> Result(Plan, ValidationIssue) = fn(plan) {
+    let checks: Array(Tuple([Bool, String])) = [
+        (array.length(plan.projections) > 0, "plan must have at least one projection"),
+        (limit_valid(plan.limit), "limit must be a non-negative integer"),
+        (exprs_within_depth(plan),
+         `an expression exceeds the supported depth limit of \{max_expr_depth}`),
+        (array.all(plan_agg_calls(plan), agg_call_valid),
+         "an aggregate call is structurally invalid (only COUNT(*) may omit its argument and DISTINCT requires an argument)"),
+        (array.all(plan_scalar_calls(plan), scalar_arity_valid),
+         "a scalar call has invalid arity"),
+        (join_aliases_unique(plan),
+         "join aliases must be unique and distinct from the base source alias"),
+        (column_sources_known(plan),
+         "a column reference uses an unknown source alias"),
+    ];
+    match first_failure(checks) {
+        'Some(message) => 'Err('Structure(message)),
+        'None => 'Ok(plan),
+    }
+};
+
+# --- Profile checks ----------------------------------------------------------------
+
+def check_profile: Fn(Plan, PlanProfile) -> Result(Plan, ValidationIssue) = fn(plan, profile) {
+    let checks: Array(Tuple([Bool, String])) = [
+        (array.length(plan.joins) == 0 || profile.allow_joins,
+         "joins are not allowed by profile"),
+        (array.all(plan.joins, fn(join) { join_kind_allowed(profile.join_kinds, join.kind) }),
+         "a join kind is not allowed by profile"),
+        (match plan.filter {
+            'None => 'True,
+            'Some(_) => profile.allow_filter,
+        }, "filter is not allowed by profile"),
+        (array.length(plan.group_by) == 0 || profile.allow_group_by,
+         "grouping is not allowed by profile"),
+        (array.length(plan.ordering) == 0 || profile.allow_order_by,
+         "ordering is not allowed by profile"),
+        (match plan.limit {
+            'None => 'True,
+            'Some(_) => profile.allow_limit,
+        }, "limit is not allowed by profile"),
+        (array.all(plan_agg_calls(plan), fn(call) { !call.distinct || profile.allow_distinct }),
+         "DISTINCT aggregates are not allowed by profile"),
+        (array.all(plan_scalar_calls(plan), fn(call) {
+            scalar_function_allowed(profile.scalar_functions, call.function)
+        }), "a scalar function is not allowed by profile"),
+        (array.all(plan_agg_calls(plan), fn(call) {
+            aggregate_function_allowed(profile.aggregate_functions, call.function)
+        }), "an aggregate function is not allowed by profile"),
+    ];
+    match first_failure(checks) {
+        'Some(message) => 'Err('Profile(message)),
+        'None => 'Ok(plan),
+    }
+};
+
+# --- Public entry point -------------------------------------------------------------
+
+# Pure validation. Returns 'Ok(plan) when the plan is well formed and only
+# uses capabilities accepted by the profile; otherwise 'Err with a
+# categorized issue. No fail!, no partial Query.
+export def validate: Fn(Plan, PlanProfile) -> Result(Plan, ValidationIssue) = fn(plan, profile) {
+    match check_identifiers(plan) {
+        'Err(issue) => 'Err(issue),
+        'Ok(_) => match check_structure(plan) {
+            'Err(issue) => 'Err(issue),
+            'Ok(_) => check_profile(plan, profile),
+        },
+    }
+};

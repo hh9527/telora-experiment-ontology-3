@@ -1,0 +1,260 @@
+# Deterministic SQLite lowering for QueryBuilder.
+#
+# transform_sqlite(plan, profile) validates the plan against the profile,
+# then renders a parameterized SQLite query. The transform is pure and
+# deterministic: the same legal Plan always yields byte-identical SQL and the
+# same binding order. Runtime values only ever appear as `?` placeholders and
+# are collected into Query.bindings.
+import "std/array" as array;
+import "std/string" as string;
+import "@src/types.telora" {
+    Plan, PlanProfile, Query, Val, Expr, Source, Projection, Join,
+    EquiCondition, OrderItem, AggCall, ScalarCall, ScalarFunction,
+    AggFunction, ValidationIssue,
+};
+import "@src/validate.telora" { validate };
+
+# Rendering state threaded through lowering: the SQL fragment produced so far
+# and the bindings collected in placeholder order.
+type RenderState = struct {
+    sql: String,
+    bindings: Array(Val),
+};
+
+# --- Operator text ---------------------------------------------------------------
+
+type ScalarKind = enum {
+    'Infix,
+    'Prefix,
+    'Function,
+};
+
+def scalar_kind: Fn(ScalarFunction) -> ScalarKind = fn(function) {
+    match function {
+        'Eq => 'Infix,
+        'Ne => 'Infix,
+        'Lt => 'Infix,
+        'Le => 'Infix,
+        'Gt => 'Infix,
+        'Ge => 'Infix,
+        'And => 'Infix,
+        'Or => 'Infix,
+        'Not => 'Prefix,
+        'Abs => 'Function,
+        'Round => 'Function,
+        'Floor => 'Function,
+        'Ceil => 'Function,
+        'Lower => 'Function,
+        'Upper => 'Function,
+        'Length => 'Function,
+        'Trim => 'Function,
+        'Substr => 'Function,
+        'Coalesce => 'Function,
+    }
+};
+
+def scalar_sql: Fn(ScalarFunction) -> String = fn(function) {
+    match function {
+        'Abs => "abs",
+        'Round => "round",
+        'Floor => "floor",
+        'Ceil => "ceil",
+        'Lower => "lower",
+        'Upper => "upper",
+        'Length => "length",
+        'Trim => "trim",
+        'Substr => "substr",
+        'Coalesce => "coalesce",
+        'Eq => "=",
+        'Ne => "<>",
+        'Lt => "<",
+        'Le => "<=",
+        'Gt => ">",
+        'Ge => ">=",
+        'And => "AND",
+        'Or => "OR",
+        'Not => "NOT",
+    }
+};
+
+def agg_sql: Fn(AggFunction) -> String = fn(function) {
+    match function {
+        'Count => "count",
+        'Sum => "sum",
+        'Avg => "avg",
+        'Min => "min",
+        'Max => "max",
+    }
+};
+
+# --- Expression rendering ---------------------------------------------------------
+
+def render_expr: Fn(Expr, Array(Val)) -> RenderState = fn(expr, bindings) {
+    match expr {
+        'Column(column) => {
+            {sql: `\{column.source.text}.\{column.column.text}`, bindings: bindings}
+        },
+        'Literal(value) => {
+            {sql: "?", bindings: array.push(bindings, value)}
+        },
+        'ScalarCall(call) => render_scalar_call(call, bindings),
+        'AggCall(call) => render_agg_call(call, bindings),
+    }
+};
+
+def render_expr_list: Fn(Array(Expr), Array(Val)) -> RenderState = fn(exprs, bindings) {
+    let parts = array.fold(exprs, {sqls: [], bindings: bindings}, fn(state, item) {
+        let rendered = render_expr(item, state.bindings);
+        {sqls: array.push(state.sqls, rendered.sql), bindings: rendered.bindings}
+    });
+    {sql: string.join(parts.sqls, ", "), bindings: parts.bindings}
+};
+
+def render_scalar_call: Fn(ScalarCall, Array(Val)) -> RenderState = fn(call, bindings) {
+    match scalar_kind(call.function) {
+        'Infix => {
+            let left = render_expr(call.args[0], bindings);
+            let right = render_expr(call.args[1], left.bindings);
+            {sql: `(\{left.sql} \{scalar_sql(call.function)} \{right.sql})`, bindings: right.bindings}
+        },
+        'Prefix => {
+            let arg = render_expr(call.args[0], bindings);
+            {sql: `(\{scalar_sql(call.function)} \{arg.sql})`, bindings: arg.bindings}
+        },
+        'Function => {
+            let args_state = render_expr_list(call.args, bindings);
+            {sql: `\{scalar_sql(call.function)}(\{args_state.sql})`, bindings: args_state.bindings}
+        },
+    }
+};
+
+def render_agg_call: Fn(AggCall, Array(Val)) -> RenderState = fn(call, bindings) {
+    let name = agg_sql(call.function);
+    match call.arg {
+        'None => {
+            {sql: `\{name}(*)`, bindings: bindings}
+        },
+        'Some(arg) => {
+            let rendered = render_expr(arg, bindings);
+            if call.distinct {
+                {sql: `\{name}(DISTINCT \{rendered.sql})`, bindings: rendered.bindings}
+            } else {
+                {sql: `\{name}(\{rendered.sql})`, bindings: rendered.bindings}
+            }
+        },
+    }
+};
+
+# --- Clause rendering ---------------------------------------------------------------
+
+def render_source: Fn(Source) -> String = fn(source) {
+    `\{source.name.text} AS \{source.alias.text}`
+};
+
+def render_projections: Fn(Array(Projection), Array(Val)) -> RenderState = fn(projections, bindings) {
+    let parts = array.fold(projections, {sqls: [], bindings: bindings}, fn(state, proj) {
+        let rendered = render_expr(proj.expr, state.bindings);
+        {sqls: array.push(state.sqls, `\{rendered.sql} AS \{proj.alias.text}`),
+         bindings: rendered.bindings}
+    });
+    {sql: string.join(parts.sqls, ", "), bindings: parts.bindings}
+};
+
+def render_equi_conditions: Fn(Array(EquiCondition)) -> String = fn(conditions) {
+    let parts = array.map(conditions, fn(condition) {
+        `\{condition.left.source.text}.\{condition.left.column.text} = \{condition.right.source.text}.\{condition.right.column.text}`
+    });
+    string.join(parts, " AND ")
+};
+
+def render_joins: Fn(Array(Join), Array(Val)) -> RenderState = fn(joins, bindings) {
+    let parts = array.fold(joins, {sqls: [], bindings: bindings}, fn(state, join) {
+        let kind_sql = match join.kind {
+            'Inner => "INNER JOIN",
+            'Left => "LEFT JOIN",
+        };
+        {sqls: array.push(state.sqls,
+            ` \{kind_sql} \{render_source(join.right)} ON \{render_equi_conditions(join.on)}`),
+         bindings: state.bindings}
+    });
+    {sql: string.join(parts.sqls, ""), bindings: parts.bindings}
+};
+
+def render_filter: Fn(Option(Expr), Array(Val)) -> RenderState = fn(filter, bindings) {
+    match filter {
+        'None => {sql: "", bindings: bindings},
+        'Some(expr) => {
+            let rendered = render_expr(expr, bindings);
+            {sql: ` WHERE \{rendered.sql}`, bindings: rendered.bindings}
+        },
+    }
+};
+
+def render_group_by: Fn(Array(Expr), Array(Val)) -> RenderState = fn(group_by, bindings) {
+    if array.length(group_by) == 0 {
+        {sql: "", bindings: bindings}
+    } else {
+        let rendered = render_expr_list(group_by, bindings);
+        {sql: ` GROUP BY \{rendered.sql}`, bindings: rendered.bindings}
+    }
+};
+
+def render_ordering: Fn(Array(OrderItem), Array(Val)) -> RenderState = fn(ordering, bindings) {
+    if array.length(ordering) == 0 {
+        {sql: "", bindings: bindings}
+    } else {
+        let parts = array.fold(ordering, {sqls: [], bindings: bindings}, fn(state, item) {
+            let rendered = render_expr(item.expr, state.bindings);
+            let direction = match item.direction {
+                'Asc => "ASC",
+                'Desc => "DESC",
+            };
+            {sqls: array.push(state.sqls, `\{rendered.sql} \{direction}`),
+             bindings: rendered.bindings}
+        });
+        {sql: ` ORDER BY \{string.join(parts.sqls, ", ")}`, bindings: parts.bindings}
+    }
+};
+
+def render_limit: Fn(Option(Int), Array(Val)) -> RenderState = fn(limit, bindings) {
+    match limit {
+        'None => {sql: "", bindings: bindings},
+        'Some(n) => {sql: " LIMIT ?", bindings: array.push(bindings, 'Int(n))},
+    }
+};
+
+def render_plan: Fn(Plan) -> RenderState = fn(plan) {
+    let select_state = render_projections(plan.projections, []);
+    let join_state = render_joins(plan.joins, select_state.bindings);
+    let where_state = render_filter(plan.filter, join_state.bindings);
+    let group_state = render_group_by(plan.group_by, where_state.bindings);
+    let order_state = render_ordering(plan.ordering, group_state.bindings);
+    let limit_state = render_limit(plan.limit, order_state.bindings);
+    {
+        sql: `SELECT \{select_state.sql} FROM \{render_source(plan.source)}\{join_state.sql}\{where_state.sql}\{group_state.sql}\{order_state.sql}\{limit_state.sql}`,
+        bindings: limit_state.bindings,
+    }
+};
+
+# --- Public entry point ---------------------------------------------------------------
+
+def issue_text: Fn(ValidationIssue) -> String = fn(issue) {
+    match issue {
+        'Profile(message) => `profile violation: \{message}`,
+        'Structure(message) => `plan structure violation: \{message}`,
+        'Identifier(message) => `invalid identifier: \{message}`,
+        'Transform(message) => `sqlite transform failure: \{message}`,
+    }
+};
+
+# Validate then concretize. On any violation this fails with a categorized
+# diagnostic and never publishes a partial Query.
+export def transform_sqlite: Fn(Plan, PlanProfile) -> Query = fn(plan, profile) {
+    match validate(plan, profile) {
+        'Ok(_) => {
+            let rendered = render_plan(plan);
+            {sql: rendered.sql, bindings: rendered.bindings}
+        },
+        'Err(issue) => fail!(issue_text(issue), plan, profile),
+    }
+};

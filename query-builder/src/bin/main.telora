@@ -1,0 +1,54 @@
+# Showcase: build a legal Plan with standard operators and lower it to a
+# parameterized SQLite Query.
+import "std/array" as array;
+import "std/string" as string;
+import "@src/lib.telora" {
+    Plan, Val,
+    standard_profile, source, col_ref, col_expr, lit, scalar_call, agg_call,
+    ident, transform_sqlite,
+};
+
+# A legal plan exercising sources, projections, a bound-value filter, an
+# equi-join, grouping with aggregates, ordering and a bound limit.
+def demo_plan: Fn() -> Plan = fn() {
+    {
+        revision: "orders-query-v3",
+        source: source("orders", "o"),
+        projections: [
+            {expr: col_expr("c", "country"), alias: ident("country")},
+            {expr: agg_call('Count, 'None, 'False), alias: ident("order_count")},
+            {expr: agg_call('Sum, 'Some(col_expr("o", "total")), 'False), alias: ident("total_revenue")},
+        ],
+        filter: 'Some(scalar_call('Gt, [col_expr("o", "total"), lit('Int(50))])),
+        joins: [
+            {kind: 'Inner, right: source("customers", "c"), on: [
+                {left: col_ref("o", "customer_id"), right: col_ref("c", "id")},
+            ]},
+        ],
+        group_by: [col_expr("o", "customer_id"), col_expr("c", "country")],
+        ordering: [
+            {expr: agg_call('Sum, 'Some(col_expr("o", "total")), 'False), direction: 'Desc},
+        ],
+        limit: 'Some(10),
+    }
+};
+
+def render_val: Fn(Val) -> String = fn(value) {
+    match value {
+        'String(text) => `"\{text}"`,
+        'Int(n) => `\{n}`,
+        'Float(f) => `\{f}`,
+        'Bool(b) => `\{b}`,
+    }
+};
+
+def render_bindings: Fn(Array(Val)) -> String = fn(bindings) {
+    string.join(array.map(bindings, render_val), ", ")
+};
+
+export def output: String = do {
+    let query = transform_sqlite(demo_plan(), standard_profile);
+    let sql_line = `sql: \{query.sql}`;
+    let bindings_line = `bindings: [\{render_bindings(query.bindings)}]`;
+    string.join([sql_line, bindings_line], "\n")
+};

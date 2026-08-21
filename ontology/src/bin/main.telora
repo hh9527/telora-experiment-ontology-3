@@ -1,0 +1,189 @@
+# ontology/src/bin/main.telora
+# 成功示例：虚构的小型企业知识 -> 查询请求 -> QueryBuilder Plan -> SQLite Query。
+# 领域是虚构的在线课程平台分析（与物流无关）。
+# 展示：多 grain 指标登记、受控计算维度（substr 按月截断）、有类型维度筛选
+# （范围 + 等值，And 组合）、已请求 measure/dimension 排序（指标降序 + 维度升序）、
+# Top N limit，以及 profile 约束。
+
+import "std/array" as array;
+import "std/string" as string;
+import "query-builder/lib.telora" as qb;
+import "@src/lib.telora" as e;
+
+# ============ 领域类型（虚构） ============
+
+type MeasureId = enum { 'Revenue, 'EnrollmentCount, 'DistinctLearners, 'AvgRating, 'AwardCount };
+type DimensionId = enum { 'LearnerCountry, 'CourseCategory, 'EnrollmentMonth };
+type EntityId = enum { 'Enrollments, 'Learners, 'Courses, 'CertificateAwards };
+type AttributeId = enum {
+  'EnrollmentId, 'AmountPaid, 'Rating, 'LearnerId, 'CourseId, 'CreatedAt,
+  'Country, 'Name, 'Category, 'Title, 'CertificateId, 'AwardedAt,
+};
+type RelationId = enum { 'EnrollLearner, 'EnrollCourse, 'CertCourse };
+type Subject = String;
+type MeasureInput = enum { 'All, 'Restricted };
+type DimensionInput = enum { 'All };
+type FilterInput = enum { 'Category(String), 'Month(String), 'Country(String) };
+
+# ============ 企业知识（同时登记 Enrollments 与 CertificateAwards 两个 grain 的指标） ============
+
+def make_knowledge: Fn() -> e.Knowledge(MeasureId, DimensionId, EntityId, AttributeId, RelationId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    revision: "course-analytics-v1",
+    entities: [
+      e.entity('Enrollments, e.source_ref("enrollments", "en"), [
+        e.attribute('EnrollmentId, 'Enrollments, "enrollment_id"),
+        e.attribute('AmountPaid, 'Enrollments, "amount_paid"),
+        e.attribute('Rating, 'Enrollments, "rating"),
+        e.attribute('LearnerId, 'Enrollments, "learner_id"),
+        e.attribute('CourseId, 'Enrollments, "course_id"),
+        e.attribute('CreatedAt, 'Enrollments, "created_at"),
+      ]),
+      e.entity('Learners, e.source_ref("learners", "ln"), [
+        e.attribute('LearnerId, 'Learners, "learner_id"),
+        e.attribute('Country, 'Learners, "country"),
+        e.attribute('Name, 'Learners, "name"),
+      ]),
+      e.entity('Courses, e.source_ref("courses", "co"), [
+        e.attribute('CourseId, 'Courses, "course_id"),
+        e.attribute('Category, 'Courses, "category"),
+        e.attribute('Title, 'Courses, "title"),
+      ]),
+      e.entity('CertificateAwards, e.source_ref("certificate_awards", "ca"), [
+        e.attribute('CertificateId, 'CertificateAwards, "certificate_id"),
+        e.attribute('CourseId, 'CertificateAwards, "course_id"),
+        e.attribute('AwardedAt, 'CertificateAwards, "awarded_at"),
+      ]),
+    ],
+    relations: [
+      e.relation('EnrollLearner, 'Enrollments, 'Learners,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'LearnerId), e.attribute_ref('Learners, 'LearnerId))]),
+        'GrainSafe, 'Inner),
+      e.relation('EnrollCourse, 'Enrollments, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+      e.relation('CertCourse, 'CertificateAwards, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('CertificateAwards, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+    ],
+    measures: [
+      e.measure('Revenue, 'Enrollments, 'AmountPaid, 'Aggregate({function: 'Sum, distinct: 'False}), "revenue"),
+      e.measure('EnrollmentCount, 'Enrollments, 'EnrollmentId, 'Aggregate({function: 'Count, distinct: 'False}), "enrollment_count"),
+      e.measure('DistinctLearners, 'Enrollments, 'LearnerId, 'Aggregate({function: 'Count, distinct: 'True}), "distinct_learners"),
+      e.measure('AvgRating, 'Enrollments, 'Rating, 'Aggregate({function: 'Avg, distinct: 'False}), "avg_rating"),
+      e.measure('AwardCount, 'CertificateAwards, 'CertificateId, 'Aggregate({function: 'Count, distinct: 'False}), "award_count"),
+    ],
+    dimensions: [
+      e.dimension('LearnerCountry, 'Learners, e.dimension_attribute('Learners, 'Country), "learner_country"),
+      e.dimension('CourseCategory, 'Courses, e.dimension_attribute('Courses, 'Category), "course_category"),
+      # 受控计算维度：substr(en.created_at, 1, 7)（按月截断）
+      e.dimension('EnrollmentMonth, 'Enrollments,
+        e.dimension_computed(e.computed_expr('Substr, [
+          e.scalar_arg_attribute('Enrollments, 'CreatedAt),
+          e.scalar_arg_literal('Int(1)),
+          e.scalar_arg_literal('Int(7)),
+        ])),
+        "enrollment_month"),
+    ],
+    measure_capabilities: [
+      e.capability('Revenue, fn(subject, input) { input == 'All }),
+      e.capability('EnrollmentCount, fn(subject, input) { input == 'All }),
+      e.capability('DistinctLearners, fn(subject, input) { input == 'All }),
+      e.capability('AvgRating, fn(subject, input) { input == 'All }),
+      e.capability('AwardCount, fn(subject, input) { input == 'All }),
+    ],
+    dimension_capabilities: [
+      e.capability('LearnerCountry, fn(subject, input) { input == 'All }),
+      e.capability('CourseCategory, fn(subject, input) { input == 'All }),
+      e.capability('EnrollmentMonth, fn(subject, input) { input == 'All }),
+    ],
+    filter_capabilities: [
+      e.filter_capability('CourseCategory, fn(subject, input) {
+        input == 'Category("Analytics") || input == 'Category("Design")
+      }, fn(input) {
+        match input {
+          'Category(s) => 'String(s),
+          _ => fail!("invalid filter value for CourseCategory", input),
+        }
+      }),
+      e.filter_capability('EnrollmentMonth, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Month(s) => 'String(s),
+          _ => fail!("invalid filter value for EnrollmentMonth", input),
+        }
+      }),
+      e.filter_capability('LearnerCountry, fn(subject, input) { 'True }, fn(input) {
+        match input {
+          'Country(s) => 'String(s),
+          _ => fail!("invalid filter value for LearnerCountry", input),
+        }
+      }),
+    ],
+    plan_profile: qb.with_scalar_functions(
+      qb.with_aggregate_functions(
+        qb.with_join_kinds(qb.standard_profile, ['Inner]),
+        ['Sum, 'Count, 'Avg]),
+      ['Substr, 'Eq, 'Ge, 'Le, 'And]),
+  }
+};
+
+# ============ 查询请求（base grain 由 measure 决定：Enrollments） ============
+# 筛选：EnrollmentMonth 范围（Ge 2026-04、Le 2026-06）+ CourseCategory 等值；
+# 排序：Revenue 降序后 EnrollmentMonth 升序；Top N = 10。
+
+def make_request: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "analyst@example.com", input: 'All},
+      {id: 'DistinctLearners, subject: "analyst@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "analyst@example.com", input: 'All},
+      {id: 'EnrollmentMonth, subject: "analyst@example.com", input: 'All},
+    ],
+    filters: [
+      {id: 'EnrollmentMonth, subject: "analyst@example.com", input: 'Month("2026-04"), op: 'Ge},
+      {id: 'EnrollmentMonth, subject: "analyst@example.com", input: 'Month("2026-06"), op: 'Le},
+      {id: 'CourseCategory, subject: "analyst@example.com", input: 'Category("Analytics"), op: 'Eq},
+    ],
+    ordering: [
+      {target: 'Measure('Revenue), direction: 'Desc},
+      {target: 'Dimension('EnrollmentMonth), direction: 'Asc},
+    ],
+    limit: 'Some(10),
+  }
+};
+
+# ============ 展示 ============
+
+def val_text: Fn(qb.Val) -> String = fn(v) {
+  match v {
+    'String(s) => `"\{s}"`,
+    'Int(i) => `\{i}`,
+    'Float(f) => `\{f}`,
+    'Bool(b) => if b { "true" } else { "false" },
+  }
+};
+
+def summarize: Fn(qb.Plan, qb.Query) -> String = fn(plan, query) {
+  let bindings_text = string.join(array.map(query.bindings, val_text), ", ");
+  let filter_text = match plan.filter {
+    'None => "none",
+    'Some(_) => "set",
+  };
+  let limit_text = match plan.limit {
+    'None => "none",
+    'Some(n) => `\{n}`,
+  };
+  `plan revision=\{plan.revision} source=\{plan.source.alias.text} projections=\{array.length(plan.projections)} joins=\{array.length(plan.joins)} group_by=\{array.length(plan.group_by)} filter=\{filter_text} ordering=\{array.length(plan.ordering)} limit=\{limit_text}\nquery=\{query.sql}\nbindings=[\{bindings_text}]`
+};
+
+export def output: String = do {
+  let knowledge = make_knowledge();
+  let request = make_request();
+  let creator = e.make_query_creator(knowledge);
+  let plan = creator(request);
+  let observed = dbg!(plan, "generated plan");
+  let query = qb.transform_sqlite(observed, knowledge.plan_profile);
+  summarize(observed, query)
+};

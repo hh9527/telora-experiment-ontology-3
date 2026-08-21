@@ -1,1 +1,17 @@
-{}
+{
+  "measures": [
+    {"id": "UnitsShipped", "subject": "category-ops@example.com", "input": "All"}
+  ],
+  "dimensions": [
+    {"id": "ProductCategory", "subject": "category-ops@example.com", "input": "All"}
+  ],
+  "filters": [
+    {"id": "OrderMonth", "subject": "category-ops@example.com", "input": {"Month": "2026-07"}, "op": "Eq"},
+    {"id": "OriginRegion", "subject": "category-ops@example.com", "input": {"Region": "华北"}, "op": "Eq"}
+  ],
+  "ordering": [
+    {"target": {"Measure": "UnitsShipped"}, "direction": "Desc"},
+    {"target": {"Dimension": "ProductCategory"}, "direction": "Asc"}
+  ],
+  "limit": 3
+}

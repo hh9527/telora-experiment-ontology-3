@@ -1,0 +1,213 @@
+# ent-1/src/bin/query-surface.telora
+# 公共查询面验证：使用不针对隐藏意图的通用 typed Request，实际验证 facade
+# 可加载、lowering 确定且结果可编码；对 Host 反馈的三组代表性参数化请求
+# （filter + ordering + limit）断言 SQL/bindings、稳定排序、limit 与确定性，
+# 所有业务值与 N 都进入 bindings（不内联）。
+
+import "@src/query.telora" { Request, lower, MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput };
+import "@src/model.telora" { creator, plan_profile };
+import "query-builder/lib.telora" as qb;
+import "std/codec" as codec;
+import "std/result" as result;
+import "std/value" { Value };
+import "std/json" as json;
+import "std/array" as array;
+import "std/string" as string;
+
+# --- 通用请求（不针对任何具体隐藏意图）------------------------------------------
+
+def request_gen: Request = {
+    measures: [{id: 'OrdersCreated, subject: "designer@example.com", input: 'All}],
+    dimensions: [
+        {id: 'OrderMonth, subject: "designer@example.com", input: 'All},
+        {id: 'CarrierName, subject: "designer@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+# --- 代表性参数化请求（Host 反馈场景）--------------------------------------------
+
+# 1) DeliveredPackages + 2026-07 + 华东 + CarrierName Top 5
+def request_a: Request = {
+    measures: [{id: 'DeliveredPackages, subject: "designer@example.com", input: 'All}],
+    dimensions: [{id: 'CarrierName, subject: "designer@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "designer@example.com", input: 'Month("2026-07"), op: 'Eq},
+        {id: 'OriginRegion, subject: "designer@example.com", input: 'Region("华东"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('DeliveredPackages), direction: 'Desc},
+        {target: 'Dimension('CarrierName), direction: 'Asc},
+    ],
+    limit: 'Some(5),
+};
+
+# 2) UnitsShipped + 2026-04..2026-06 + Gold + ServiceName Top 3
+def request_b: Request = {
+    measures: [{id: 'UnitsShipped, subject: "designer@example.com", input: 'All}],
+    dimensions: [{id: 'ServiceName, subject: "designer@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "designer@example.com", input: 'Month("2026-04"), op: 'Ge},
+        {id: 'OrderMonth, subject: "designer@example.com", input: 'Month("2026-06"), op: 'Le},
+        {id: 'CustomerTier, subject: "designer@example.com", input: 'Tier("Gold"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('UnitsShipped), direction: 'Desc},
+        {target: 'Dimension('ServiceName), direction: 'Asc},
+    ],
+    limit: 'Some(3),
+};
+
+# 3) UnitsShipped + 2026-07 + ProductCategory Top 10
+def request_c: Request = {
+    measures: [{id: 'UnitsShipped, subject: "designer@example.com", input: 'All}],
+    dimensions: [{id: 'ProductCategory, subject: "designer@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "designer@example.com", input: 'Month("2026-07"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('UnitsShipped), direction: 'Desc},
+        {target: 'Dimension('ProductCategory), direction: 'Asc},
+    ],
+    limit: 'Some(10),
+};
+
+def query_gen = lower(request_gen);
+def query_gen_again = lower(request_gen);
+def query_a = lower(request_a);
+def query_a_again = lower(request_a);
+def query_b = lower(request_b);
+def query_b_again = lower(request_b);
+def query_c = lower(request_c);
+def query_c_again = lower(request_c);
+
+def expected_a: Array(qb.Val) = ['Int(1), 'Int(7), 'String("2026-07"), 'String("华东"), 'Int(5)];
+def expected_b: Array(qb.Val) = [
+    'Int(1), 'Int(7), 'String("2026-04"),
+    'Int(1), 'Int(7), 'String("2026-06"),
+    'String("Gold"), 'Int(3),
+];
+def expected_c: Array(qb.Val) = ['Int(1), 'Int(7), 'String("2026-07"), 'Int(10)];
+
+# facade 可加载 + lowering 确定：同一请求两次 lower 逐字节相同
+def deterministic_ok: Bool = query_gen.sql == query_gen_again.sql
+    && query_gen.bindings == query_gen_again.bindings
+    && query_a.sql == query_a_again.sql && query_a.bindings == query_a_again.bindings
+    && query_b.sql == query_b_again.sql && query_b.bindings == query_b_again.bindings
+    && query_c.sql == query_c_again.sql && query_c.bindings == query_c_again.bindings;
+
+# Plan 与 Query 分开保留并一致：facade 的 lower 结果与直接
+# transform_sqlite(creator(private_request), plan_profile) 完全一致
+def plan_query_ok: Bool = do {
+    let private_a: qb.Plan = creator({
+        measures: [{id: 'DeliveredPackages, subject: "designer@example.com", input: 'All}],
+        dimensions: [{id: 'CarrierName, subject: "designer@example.com", input: 'All}],
+        filters: [
+            {id: 'OrderMonth, subject: "designer@example.com", input: 'Month("2026-07"), op: 'Eq},
+            {id: 'OriginRegion, subject: "designer@example.com", input: 'Region("华东"), op: 'Eq},
+        ],
+        ordering: [
+            {target: 'Measure('DeliveredPackages), direction: 'Desc},
+            {target: 'Dimension('CarrierName), direction: 'Asc},
+        ],
+        limit: 'Some(5),
+    });
+    let query = qb.transform_sqlite(private_a, plan_profile);
+    query.sql == query_a.sql && query.bindings == query_a.bindings
+};
+
+# profile 约束：合法请求的 Plan 通过 plan_profile 校验
+def profile_ok: Bool = match qb.validate(creator({
+    measures: [{id: 'DeliveredPackages, subject: "designer@example.com", input: 'All}],
+    dimensions: [{id: 'CarrierName, subject: "designer@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "designer@example.com", input: 'Month("2026-07"), op: 'Eq},
+        {id: 'OriginRegion, subject: "designer@example.com", input: 'Region("华东"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('DeliveredPackages), direction: 'Desc},
+        {target: 'Dimension('CarrierName), direction: 'Asc},
+    ],
+    limit: 'Some(5),
+}), plan_profile) {
+    'Ok(_) => 'True,
+    'Err(_) => 'False,
+};
+
+# 结果可编码：Query 经 codec 编码为 Value 并可 JSON 文本化
+def encodable_ok: Bool = do {
+    let encoded_a = codec.encode(Value, query_a) |> result.is_ok;
+    let encoded_b = codec.encode(Value, query_b) |> result.is_ok;
+    let encoded_c = codec.encode(Value, query_c) |> result.is_ok;
+    let text_a = json.stringify(codec.encode(Value, query_a) |> result.unwrap);
+    string.contains(text_a, "sql") && string.contains(text_a, "bindings")
+        && encoded_a && encoded_b && encoded_c
+};
+
+# --- 参数化请求断言 --------------------------------------------------------------
+
+def sql_has: Fn(String, String) -> Bool = fn(sql, needle) {
+    string.contains(sql, needle)
+};
+
+def sql_lacks: Fn(String, String) -> Bool = fn(sql, needle) {
+    string.contains(sql, needle) == 'False
+};
+
+# A：DeliveredPackages + 月份 Eq 2026-07 + 地区 Eq 华东 + CarrierName 分组 +
+# 指标降序/名称升序 + limit 5
+def a_ok: Bool = sql_has(query_a.sql, "SELECT")
+    && sql_has(query_a.sql, "FROM packages")
+    && sql_has(query_a.sql, "WHERE")
+    && sql_has(query_a.sql, "GROUP BY")
+    && sql_has(query_a.sql, "ORDER BY")
+    && sql_has(query_a.sql, "LIMIT ?")
+    && sql_has(query_a.sql, "substr(o.created_at, ?, ?)")
+    && sql_has(query_a.sql, "rg.name")
+    && sql_lacks(query_a.sql, "2026-07")
+    && sql_lacks(query_a.sql, "华东")
+    && sql_lacks(query_a.sql, "LIMIT 5")
+    && query_a.bindings == expected_a;
+
+# B：UnitsShipped + 月份 Ge 2026-04/Le 2026-06 + 等级 Eq Gold + ServiceName 分组 +
+# 指标降序/名称升序 + limit 3
+def b_ok: Bool = sql_has(query_b.sql, "SELECT")
+    && sql_has(query_b.sql, "FROM package_items")
+    && sql_has(query_b.sql, "WHERE")
+    && sql_has(query_b.sql, "GROUP BY")
+    && sql_has(query_b.sql, "ORDER BY")
+    && sql_has(query_b.sql, "LIMIT ?")
+    && sql_has(query_b.sql, "substr(o.created_at, ?, ?)")
+    && sql_has(query_b.sql, "cu.tier")
+    && sql_lacks(query_b.sql, "2026-04")
+    && sql_lacks(query_b.sql, "2026-06")
+    && sql_lacks(query_b.sql, "Gold")
+    && sql_lacks(query_b.sql, "LIMIT 3")
+    && query_b.bindings == expected_b;
+
+# C：UnitsShipped + 月份 Eq 2026-07 + ProductCategory 分组 + 指标降序/名称升序 +
+# limit 10（从 PackageItem grain 安全可达，必须成功）
+def c_ok: Bool = sql_has(query_c.sql, "SELECT")
+    && sql_has(query_c.sql, "FROM package_items")
+    && sql_has(query_c.sql, "WHERE")
+    && sql_has(query_c.sql, "GROUP BY")
+    && sql_has(query_c.sql, "ORDER BY")
+    && sql_has(query_c.sql, "LIMIT ?")
+    && sql_has(query_c.sql, "substr(o.created_at, ?, ?)")
+    && sql_has(query_c.sql, "ct.name")
+    && sql_lacks(query_c.sql, "2026-07")
+    && sql_lacks(query_c.sql, "LIMIT 10")
+    && query_c.bindings == expected_c;
+
+def all_ok: Bool = deterministic_ok && plan_query_ok && profile_ok && encodable_ok
+    && a_ok && b_ok && c_ok;
+
+export def output: String = do {
+    if all_ok {
+        `query-surface ok: deterministic=\{deterministic_ok} plan_query=\{plan_query_ok} profile=\{profile_ok} encodable=\{encodable_ok} A_bindings=\{array.length(query_a.bindings)} B_bindings=\{array.length(query_b.bindings)} C_bindings=\{array.length(query_c.bindings)}`
+    } else {
+        fail!("query-surface verification failed", query_a, query_b, query_c)
+    }
+};

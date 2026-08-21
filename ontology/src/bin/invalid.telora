@@ -1,0 +1,214 @@
+# ontology/src/bin/invalid.telora
+# 非法请求失败示例（各自独立、原子失败，不发布任何 Plan/Query）：
+#   1. output：混用两个 grain 的 measure（Revenue 在 Enrollments，AwardCount 在
+#      CertificateAwards）-> base grain 无法一致决定，resolve_base 明确失败；
+#   2. invalid_limit：limit 非正数 -> 诊断失败；
+#   3. invalid_order_target：排序引用未请求的 measure -> 诊断失败；
+#   4. invalid_filter_missing_capability：筛选引用无筛选能力的维度 -> 失败；
+#   5. invalid_filter_unauthorized：筛选授权谓词拒绝 -> 失败；
+#   6. invalid_filter_value：筛选值无法转换为 qb.Val -> 失败。
+# 运行：./bin/telora run invalid -C ontology --best-effort （非零退出，无 output）
+
+import "query-builder/lib.telora" as qb;
+import "@src/lib.telora" as e;
+
+type MeasureId = enum { 'Revenue, 'AwardCount };
+type DimensionId = enum { 'CourseCategory, 'EnrollmentMonth };
+type EntityId = enum { 'Enrollments, 'Courses, 'CertificateAwards };
+type AttributeId = enum { 'AmountPaid, 'CourseId, 'Category, 'CertificateId, 'CreatedAt };
+type RelationId = enum { 'EnrollCourse, 'CertCourse };
+type Subject = String;
+type MeasureInput = enum { 'All };
+type DimensionInput = enum { 'All };
+type FilterInput = enum { 'Category(String), 'Month(String) };
+
+# 知识：两个 grain 的获准指标同时登记；只有 CourseCategory 具备筛选能力，
+# 且授权谓词拒绝 blocked@example.com。
+def make_knowledge: Fn() -> e.Knowledge(MeasureId, DimensionId, EntityId, AttributeId, RelationId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    revision: "invalid-v1",
+    entities: [
+      e.entity('Enrollments, e.source_ref("enrollments", "en"), [
+        e.attribute('AmountPaid, 'Enrollments, "amount_paid"),
+        e.attribute('CourseId, 'Enrollments, "course_id"),
+        e.attribute('CreatedAt, 'Enrollments, "created_at"),
+      ]),
+      e.entity('Courses, e.source_ref("courses", "co"), [
+        e.attribute('CourseId, 'Courses, "course_id"),
+        e.attribute('Category, 'Courses, "category"),
+      ]),
+      e.entity('CertificateAwards, e.source_ref("certificate_awards", "ca"), [
+        e.attribute('CertificateId, 'CertificateAwards, "certificate_id"),
+        e.attribute('CourseId, 'CertificateAwards, "course_id"),
+      ]),
+    ],
+    relations: [
+      e.relation('EnrollCourse, 'Enrollments, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('Enrollments, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+      e.relation('CertCourse, 'CertificateAwards, 'Courses,
+        e.relation_mapping([e.attribute_pair(e.attribute_ref('CertificateAwards, 'CourseId), e.attribute_ref('Courses, 'CourseId))]),
+        'GrainSafe, 'Inner),
+    ],
+    measures: [
+      e.measure('Revenue, 'Enrollments, 'AmountPaid, 'Aggregate({function: 'Sum, distinct: 'False}), "revenue"),
+      e.measure('AwardCount, 'CertificateAwards, 'CertificateId, 'Aggregate({function: 'Count, distinct: 'False}), "award_count"),
+    ],
+    dimensions: [
+      e.dimension('CourseCategory, 'Courses, e.dimension_attribute('Courses, 'Category), "course_category"),
+      e.dimension('EnrollmentMonth, 'Enrollments,
+        e.dimension_computed(e.computed_expr('Substr, [
+          e.scalar_arg_attribute('Enrollments, 'CreatedAt),
+          e.scalar_arg_literal('Int(1)),
+          e.scalar_arg_literal('Int(7)),
+        ])),
+        "enrollment_month"),
+    ],
+    measure_capabilities: [
+      e.capability('Revenue, fn(subject, input) { input == 'All }),
+      e.capability('AwardCount, fn(subject, input) { input == 'All }),
+    ],
+    dimension_capabilities: [
+      e.capability('CourseCategory, fn(subject, input) { input == 'All }),
+      e.capability('EnrollmentMonth, fn(subject, input) { input == 'All }),
+    ],
+    filter_capabilities: [
+      e.filter_capability('CourseCategory, fn(subject, input) {
+        subject != "blocked@example.com"
+      }, fn(input) {
+        match input {
+          'Category(s) => 'String(s),
+          _ => fail!("invalid filter value for CourseCategory", input),
+        }
+      }),
+    ],
+    plan_profile: qb.with_scalar_functions(
+      qb.with_aggregate_functions(
+        qb.with_join_kinds(qb.standard_profile, ['Inner]),
+        ['Sum, 'Count]),
+      ['Substr, 'Eq, 'Ge, 'Le, 'And]),
+  }
+};
+
+# 非法请求 1：Revenue（Enrollments grain）与 AwardCount（CertificateAwards grain）混用
+def make_request: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "invalid@example.com", input: 'All},
+      {id: 'AwardCount, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [
+      {id: 'CourseCategory, subject: "invalid@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 非法请求 2：limit 非正数
+def make_request_bad_limit: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [],
+    ordering: [],
+    limit: 'Some(0),
+  }
+};
+
+# 非法请求 3：排序引用未请求的 measure（AwardCount 未在 measures 中）
+def make_request_bad_order: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [],
+    ordering: [
+      {target: 'Measure('AwardCount), direction: 'Asc},
+    ],
+    limit: 'None,
+  }
+};
+
+# 非法请求 4：筛选引用无筛选能力的维度（EnrollmentMonth 没有 filter capability）
+def make_request_bad_filter_capability: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+      {id: 'EnrollmentMonth, subject: "invalid@example.com", input: 'Month("2026-04"), op: 'Ge},
+    ],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 非法请求 5：筛选授权谓词拒绝（blocked subject）
+def make_request_bad_filter_auth: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+      {id: 'CourseCategory, subject: "blocked@example.com", input: 'Category("Analytics"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+# 非法请求 6：筛选值无法转换为 qb.Val（CourseCategory 收到 Month 输入）
+def make_request_bad_filter_value: Fn() -> e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = fn() {
+  {
+    measures: [
+      {id: 'Revenue, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+      {id: 'CourseCategory, subject: "invalid@example.com", input: 'Month("2026-01"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+  }
+};
+
+def run_request: Fn(e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput)) -> String = fn(request) {
+  let knowledge = make_knowledge();
+  let creator = e.make_query_creator(knowledge);
+  # 以下调用必然失败；失败时不发布任何 Plan/Query
+  let plan = creator(request);
+  let query = qb.transform_sqlite(plan, knowledge.plan_profile);
+  `plan=\{plan.revision} query=\{query.sql}`
+};
+
+# 主入口：混用 grain 的 measure（不兼容 base entities）
+export def output: String = do {
+  run_request(make_request())
+};
+
+export def invalid_limit: String = do {
+  run_request(make_request_bad_limit())
+};
+
+export def invalid_order_target: String = do {
+  run_request(make_request_bad_order())
+};
+
+export def invalid_filter_missing_capability: String = do {
+  run_request(make_request_bad_filter_capability())
+};
+
+export def invalid_filter_unauthorized: String = do {
+  run_request(make_request_bad_filter_auth())
+};
+
+export def invalid_filter_value: String = do {
+  run_request(make_request_bad_filter_value())
+};

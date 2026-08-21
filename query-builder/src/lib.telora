@@ -1,0 +1,36 @@
+# QueryBuilder public facade.
+#
+# Re-exports the stable public API: standard Plan operators, PlanProfile,
+# validation and deterministic SQLite lowering. This module is domain
+# agnostic: it contains no ontology or enterprise facts.
+import "@src/types.telora" {
+    Ident, Val, Query, Source, ColumnRef, ScalarFunction, AggFunction,
+    AggCall, ScalarCall, Expr, JoinKind, EquiCondition, Join,
+    OrderDirection, OrderItem, Projection, Plan, PlanProfile,
+    ValidationIssue, is_sql_identifier, ident, max_expr_depth,
+    source, col_ref, col_expr, lit, scalar_call, agg_call,
+};
+import "@src/profile.telora" {
+    standard_profile, select_profile, read_profile,
+    with_join_kinds, with_scalar_functions, with_aggregate_functions,
+    join_kind_allowed, scalar_function_allowed, aggregate_function_allowed,
+};
+import "@src/validate.telora" { validate };
+import "@src/render.telora" { transform_sqlite };
+
+export {
+    # types
+    Ident, Val, Query, Source, ColumnRef, ScalarFunction, AggFunction,
+    AggCall, ScalarCall, Expr, JoinKind, EquiCondition, Join,
+    OrderDirection, OrderItem, Projection, Plan, PlanProfile,
+    ValidationIssue,
+    # constructors and predicates
+    is_sql_identifier, ident, max_expr_depth, source, col_ref, col_expr,
+    lit, scalar_call, agg_call,
+    # profiles
+    standard_profile, select_profile, read_profile,
+    with_join_kinds, with_scalar_functions, with_aggregate_functions,
+    join_kind_allowed, scalar_function_allowed, aggregate_function_allowed,
+    # validation and lowering
+    validate, transform_sqlite,
+};

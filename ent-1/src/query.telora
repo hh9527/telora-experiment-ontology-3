@@ -1,0 +1,77 @@
+# ent-1/src/query.telora
+# 公共查询面（public facade）
+#
+# 从同一份私有 EnterpriseKnowledge 捕获 lowering，只导出业务 vocabulary、
+# typed Request 与 lower(Request) -> Query。
+# 本模块不泄漏表名、列名、alias、join 路径/mapping、Plan 或 SQL 片段。
+
+import "@src/model.telora" as model;
+import "ontology/lib.telora" as e;
+import "query-builder/lib.telora" as qb;
+import "std/array" as array;
+
+# --- 公共业务词汇（别名自私有模型，不复制领域事实） ----------------------------
+
+export type MeasureId = model.MeasureId;
+export type DimensionId = model.DimensionId;
+export type Subject = model.Subject;
+export type MeasureInput = model.MeasureInput;
+export type DimensionInput = model.DimensionInput;
+
+# --- 公共筛选与排序类型 ---------------------------------------------------------
+
+# 公共筛选输入：只暴露四种受支持维度变体（Month/Tier/Region/Category）。
+# DeliveryException 属于封闭词汇但没有获准能力，公共面不暴露其筛选输入。
+export type FilterInput = enum {
+    'Month(String),
+    'Tier(String),
+    'Region(String),
+    'Category(String),
+};
+
+# 筛选比较操作（封闭）：'Eq / 'Ge / 'Le
+export type FilterOp = e.FilterOp;
+# 排序方向（封闭）：'Asc / 'Desc
+export type OrderDirection = qb.OrderDirection;
+# 排序目标：只允许引用请求中已有的 measure/dimension
+export type OrderTarget = e.OrderTarget(MeasureId, DimensionId);
+
+# --- 公共 typed Request ---------------------------------------------------------
+
+# Request 是“要什么”的声明：measures 决定统计口径与 base grain，dimensions 决定
+# 分组，filters 是范围筛选（Eq/Ge/Le，值由领域输入类型承载），ordering 只引用
+# 已请求目标，limit 是正整数 Top N。subject 是查询发起者，只用于授权与诊断，
+# 不会自动变成筛选条件。
+export type Request = struct {
+    measures: Array(e.Request(MeasureId, Subject, MeasureInput)),
+    dimensions: Array(e.Request(DimensionId, Subject, DimensionInput)),
+    filters: Array(e.FilterRequest(DimensionId, Subject, FilterInput)),
+    ordering: Array(e.OrderRequest(MeasureId, DimensionId)),
+    limit: Option(Int),
+};
+
+# --- lowering -------------------------------------------------------------------
+
+# 把公共筛选输入映射为私有 Knowledge 的输入变体（一一对应，无领域复制）。
+def to_model_input: Fn(FilterInput) -> model.FilterInput = fn(input) {
+    match input {
+        'Month(s) => 'Month(s),
+        'Tier(s) => 'Tier(s),
+        'Region(s) => 'Region(s),
+        'Category(s) => 'Category(s),
+    }
+};
+
+export def lower: Fn(Request) -> qb.Query = fn(request) {
+    let private_request: e.QueryRequest(model.MeasureId, model.DimensionId, model.Subject, model.MeasureInput, model.DimensionInput, model.FilterInput) = {
+        measures: request.measures,
+        dimensions: request.dimensions,
+        filters: array.map(request.filters, fn(f) {
+            { id: f.id, subject: f.subject, input: to_model_input(f.input), op: f.op }
+        }),
+        ordering: request.ordering,
+        limit: request.limit,
+    };
+    let plan = model.creator(private_request);
+    qb.transform_sqlite(plan, model.plan_profile)
+};

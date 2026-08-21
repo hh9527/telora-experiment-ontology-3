@@ -1,0 +1,826 @@
+# ontology/src/lib.telora
+# EnterpriseKnowledge eDSL：企业知识 -> 查询请求 -> QueryBuilder Plan。
+# 领域无关；Plan、PlanProfile、Query 与标准算子由 QueryBuilder 所有，
+# 本模块只负责企业知识的建模与 lowering 规则。
+#
+# 本版新增受控业务表达：有类型维度筛选（Eq/Ge/Le，And 组合）、
+# 已请求 measure/dimension 的 Asc/Desc 排序、可选正整数 Top N（limit）。
+# 请求仍只表达业务意图：筛选值由企业知识转换为 qb.Val，排序只引用已解析的
+# 规范表达式，不携带物理信息、qb.Expr、SQL 或 mapping。
+
+import "std/array" as array;
+import "std/option" as option;
+import "query-builder/lib.telora" as qb;
+
+# ============ 公共类型 ============
+
+# 物理数据源：表名 + 别名（SQL 标识符由 qb 校验）
+type SourceRef = struct {
+  table: String,
+  alias: String,
+};
+
+# 属性引用：实体 + 属性
+type AttributeRef(EntityId, AttributeId) = struct {
+  entity: EntityId,
+  attribute: AttributeId,
+};
+
+# 结构化等值条件：left 属性 == right 属性
+type AttributePair(EntityId, AttributeId) = struct {
+  left: AttributeRef(EntityId, AttributeId),
+  right: AttributeRef(EntityId, AttributeId),
+};
+
+# 关系 mapping：一组结构化等值条件（join ON 的来源）
+type RelationMapping(EntityId, AttributeId) = struct {
+  conditions: Array(AttributePair(EntityId, AttributeId)),
+};
+
+# 关系 grain 分类：GrainSafe 不扩张行数；FanOut 会扩张 grain
+type RelationGrain = enum {
+  'GrainSafe,
+  'FanOut,
+};
+
+# 实体属性：物理列
+type Attribute(EntityId, AttributeId) = struct {
+  id: AttributeId,
+  entity: EntityId,
+  column: String,
+};
+
+# 实体：物理数据源 + 属性目录
+type Entity(EntityId, AttributeId) = struct {
+  id: EntityId,
+  source: SourceRef,
+  attributes: Array(Attribute(EntityId, AttributeId)),
+};
+
+# 关系：有类型端点 + 企业拥有的结构化 mapping + grain 分类 + join kind
+type Relation(EntityId, AttributeId, RelationId) = struct {
+  id: RelationId,
+  left: EntityId,
+  right: EntityId,
+  mapping: RelationMapping(EntityId, AttributeId),
+  grain: RelationGrain,
+  join_kind: qb.JoinKind,
+};
+
+# 指标聚合方式
+type MeasureAgg = struct {
+  function: qb.AggFunction,
+  distinct: Bool,
+};
+
+# 指标种类：Plain 直接投影列；Aggregate 聚合投影
+type MeasureKind = enum {
+  'Plain,
+  'Aggregate(MeasureAgg),
+};
+
+# 指标：grain 实体 + 属性 + 聚合 + 输出别名
+type Measure(MeasureId, EntityId, AttributeId) = struct {
+  id: MeasureId,
+  entity: EntityId,
+  attribute: AttributeId,
+  kind: MeasureKind,
+  alias: String,
+};
+
+# 受控标量表达式：属性引用或 qb.Val 字面量
+type ScalarArg(EntityId, AttributeId) = enum {
+  'Attribute(AttributeRef(EntityId, AttributeId)),
+  'Literal(qb.Val),
+};
+
+# 标准标量函数调用（结构化，不保存预渲染 SQL）
+type ComputedExpr(EntityId, AttributeId) = struct {
+  function: qb.ScalarFunction,
+  args: Array(ScalarArg(EntityId, AttributeId)),
+};
+
+# 维度表达式：直接属性 或 受控计算表达式
+type DimensionExpr(EntityId, AttributeId) = enum {
+  'Attribute(AttributeRef(EntityId, AttributeId)),
+  'Computed(ComputedExpr(EntityId, AttributeId)),
+};
+
+# 维度：grain 实体 + 表达式 + 输出别名
+type Dimension(DimensionId, EntityId, AttributeId) = struct {
+  id: DimensionId,
+  entity: EntityId,
+  expr: DimensionExpr(EntityId, AttributeId),
+  alias: String,
+};
+
+# 能力：有类型 id + 授权谓词（subject, input）
+type Capability(Id, Subject, Input) = struct {
+  id: Id,
+  authorized: Fn(Subject, Input) -> Bool,
+};
+
+# 维度筛选支持的标准比较操作
+type FilterOp = enum {
+  'Eq,
+  'Ge,
+  'Le,
+};
+
+# 筛选请求：引用 DimensionId + 有类型领域输入 + 标准比较操作。
+# 查询方不提交 qb.Expr/列/表/alias/SQL/mapping；值由企业知识的
+# FilterCapability.to_val 转换为 qb.Val。
+type FilterRequest(DimensionId, Subject, FilterInput) = struct {
+  id: DimensionId,
+  subject: Subject,
+  input: FilterInput,
+  op: FilterOp,
+};
+
+# 筛选能力：授权 + 把领域输入转换为 qb.Val（转换失败即原子失败）
+type FilterCapability(DimensionId, Subject, FilterInput) = struct {
+  id: DimensionId,
+  authorized: Fn(Subject, FilterInput) -> Bool,
+  to_val: Fn(FilterInput) -> qb.Val,
+};
+
+# 排序目标：只允许引用已经请求的 measure 或 dimension
+type OrderTarget(MeasureId, DimensionId) = enum {
+  'Measure(MeasureId),
+  'Dimension(DimensionId),
+};
+
+# 排序请求：目标 + Asc/Desc
+type OrderRequest(MeasureId, DimensionId) = struct {
+  target: OrderTarget(MeasureId, DimensionId),
+  direction: qb.OrderDirection,
+};
+
+# 企业知识：DESIGN.md 要求的最小事实集合。
+# 指标按各自 grain 实体登记（Order/Package/PackageItem 等 grain 可以共存）；
+# 一次请求的 measure 决定该 Plan 的 base grain。
+type Knowledge(MeasureId, DimensionId, EntityId, AttributeId, RelationId, Subject, MeasureInput, DimensionInput, FilterInput) = struct {
+  revision: String,
+  entities: Array(Entity(EntityId, AttributeId)),
+  relations: Array(Relation(EntityId, AttributeId, RelationId)),
+  measures: Array(Measure(MeasureId, EntityId, AttributeId)),
+  dimensions: Array(Dimension(DimensionId, EntityId, AttributeId)),
+  measure_capabilities: Array(Capability(MeasureId, Subject, MeasureInput)),
+  dimension_capabilities: Array(Capability(DimensionId, Subject, DimensionInput)),
+  filter_capabilities: Array(FilterCapability(DimensionId, Subject, FilterInput)),
+  plan_profile: qb.PlanProfile,
+};
+
+# 查询请求：只表达"要什么"
+type Request(Id, Subject, Input) = struct {
+  id: Id,
+  subject: Subject,
+  input: Input,
+};
+
+type QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = struct {
+  measures: Array(Request(MeasureId, Subject, MeasureInput)),
+  dimensions: Array(Request(DimensionId, Subject, DimensionInput)),
+  filters: Array(FilterRequest(DimensionId, Subject, FilterInput)),
+  ordering: Array(OrderRequest(MeasureId, DimensionId)),
+  limit: Option(Int),
+};
+
+# 路径遍历最大深度（DESIGN.md：最大深度为八，恰好八条边可接受）
+export def max_path_depth: Int = 8;
+
+# ============ 构造器 ============
+
+def source_ref: Fn(String, String) -> SourceRef =
+  fn(table, alias) { {table: table, alias: alias} };
+
+def attribute: for(E, A) Fn(A, E, String) -> Attribute(E, A) =
+  fn(id, entity, column) { {id: id, entity: entity, column: column} };
+
+def entity: for(E, A) Fn(E, SourceRef, Array(Attribute(E, A))) -> Entity(E, A) =
+  fn(id, source, attributes) { {id: id, source: source, attributes: attributes} };
+
+def attribute_ref: for(E, A) Fn(E, A) -> AttributeRef(E, A) =
+  fn(entity, attribute) { {entity: entity, attribute: attribute} };
+
+def attribute_pair: for(E, A) Fn(AttributeRef(E, A), AttributeRef(E, A)) -> AttributePair(E, A) =
+  fn(left, right) { {left: left, right: right} };
+
+def relation_mapping: for(E, A) Fn(Array(AttributePair(E, A))) -> RelationMapping(E, A) =
+  fn(conditions) { {conditions: conditions} };
+
+def relation: for(E, A, R) Fn(R, E, E, RelationMapping(E, A), RelationGrain, qb.JoinKind) -> Relation(E, A, R) =
+  fn(id, left, right, mapping, grain, join_kind) {
+    {id: id, left: left, right: right, mapping: mapping, grain: grain, join_kind: join_kind}
+  };
+
+def measure: for(M, E, A) Fn(M, E, A, MeasureKind, String) -> Measure(M, E, A) =
+  fn(id, entity, attribute, kind, alias) {
+    {id: id, entity: entity, attribute: attribute, kind: kind, alias: alias}
+  };
+
+def scalar_arg_attribute: for(E, A) Fn(E, A) -> ScalarArg(E, A) =
+  fn(entity, attribute) { 'Attribute({entity: entity, attribute: attribute}) };
+
+def scalar_arg_literal: for(E, A) Fn(qb.Val) -> ScalarArg(E, A) =
+  fn(value) { 'Literal(value) };
+
+def computed_expr: for(E, A) Fn(qb.ScalarFunction, Array(ScalarArg(E, A))) -> ComputedExpr(E, A) =
+  fn(function, args) { {function: function, args: args} };
+
+def dimension_attribute: for(E, A) Fn(E, A) -> DimensionExpr(E, A) =
+  fn(entity, attribute) { 'Attribute({entity: entity, attribute: attribute}) };
+
+def dimension_computed: for(E, A) Fn(ComputedExpr(E, A)) -> DimensionExpr(E, A) =
+  fn(expr) { 'Computed(expr) };
+
+def dimension: for(D, E, A) Fn(D, E, DimensionExpr(E, A), String) -> Dimension(D, E, A) =
+  fn(id, entity, expr, alias) {
+    {id: id, entity: entity, expr: expr, alias: alias}
+  };
+
+def capability: for(I, S, In) Fn(I, Fn(S, In) -> Bool) -> Capability(I, S, In) =
+  fn(id, authorized) { {id: id, authorized: authorized} };
+
+def filter_capability: for(D, S, FI) Fn(D, Fn(S, FI) -> Bool, Fn(FI) -> qb.Val) -> FilterCapability(D, S, FI) =
+  fn(id, authorized, to_val) { {id: id, authorized: authorized, to_val: to_val} };
+
+# ============ 内部工具 ============
+
+def expect_some: for(A) Fn(Option(A), String) -> A = fn(opt, message) {
+  match opt {
+    'Some(value) => value,
+    'None => fail!(message),
+  }
+};
+
+def array_set: for(A) Fn(Array(A), Int, A) -> Array(A) = fn(xs, index, value) {
+  array.map(array.enumerate(xs), fn(p) { if p.0 == index { value } else { p.1 } })
+};
+
+def find_entity_index: for(E, A) Fn(E, Array(Entity(E, A))) -> Option(Int) = fn(target, entities) {
+  option.map(array.find(array.enumerate(entities), fn(p) { p.1.id == target }), fn(p) { p.0 })
+};
+
+def find_entity: for(E, A) Fn(E, Array(Entity(E, A))) -> Option(Entity(E, A)) = fn(target, entities) {
+  array.find(entities, fn(e) { e.id == target })
+};
+
+def find_attribute: for(E, A) Fn(Entity(E, A), A) -> Option(Attribute(E, A)) = fn(ent, target) {
+  array.find(ent.attributes, fn(a) { a.id == target })
+};
+
+def find_measure: for(M, E, A) Fn(M, Array(Measure(M, E, A))) -> Option(Measure(M, E, A)) = fn(target, measures) {
+  array.find(measures, fn(m) { m.id == target })
+};
+
+def find_dimension: for(D, E, A) Fn(D, Array(Dimension(D, E, A))) -> Option(Dimension(D, E, A)) = fn(target, dims) {
+  array.find(dims, fn(d) { d.id == target })
+};
+
+# ============ BFS 路径搜索 ============
+
+# BFS 状态：visited 按实体目录索引；pred 记录 (父实体索引, 关系索引)
+type SearchState = struct {
+  visited: Array(Bool),
+  pred: Array(Option(Tuple([Int, Int]))),
+  next: Array(Int),
+};
+
+def expand_node: for(E, A, R) Fn(Int, SearchState, Array(Entity(E, A)), Array(Relation(E, A, R)), Bool) -> SearchState =
+  fn(u, state, entities, relations, safe_only) {
+    let u_entity = expect_some(array.get(entities, u), "internal: entity index out of range");
+    array.fold(array.enumerate(relations), state, fn(st, pair) {
+      let ri = pair.0;
+      let rel = pair.1;
+      if safe_only && rel.grain != 'GrainSafe {
+        st
+      } else if rel.left != u_entity.id {
+        st
+      } else {
+        match find_entity_index(rel.right, entities) {
+          'None => fail!("relation references unknown entity", rel.id),
+          'Some(vi) => {
+            let already = expect_some(array.get(st.visited, vi), "internal: visited index out of range");
+            if already {
+              st
+            } else {
+              {
+                visited: array_set(st.visited, vi, 'True),
+                pred: array_set(st.pred, vi, 'Some((u, ri))),
+                next: array.push(st.next, vi),
+              }
+            }
+          }
+        }
+      }
+    })
+  };
+
+def expand_level: for(E, A, R) Fn(Array(Int), SearchState, Array(Entity(E, A)), Array(Relation(E, A, R)), Bool) -> SearchState =
+  fn(level, state, entities, relations, safe_only) {
+    array.fold(level, state, fn(st, u) {
+      expand_node(u, st, entities, relations, safe_only)
+    })
+  };
+
+def has_unvisited_successor: for(E, A, R) Fn(Array(Int), Array(Bool), Array(Entity(E, A)), Array(Relation(E, A, R)), Bool) -> Bool =
+  fn(level, visited, entities, relations, safe_only) {
+    array.fold(level, 'False, fn(acc, u) {
+      if acc {
+        acc
+      } else {
+        let u_entity = expect_some(array.get(entities, u), "internal: entity index out of range");
+        array.fold(array.enumerate(relations), acc, fn(st, pair) {
+          let rel = pair.1;
+          if safe_only && rel.grain != 'GrainSafe {
+            st
+          } else if rel.left != u_entity.id {
+            st
+          } else {
+            match find_entity_index(rel.right, entities) {
+              'None => st,
+              'Some(vi) => {
+                let vv = expect_some(array.get(visited, vi), "internal: visited index out of range");
+                if vv { st } else { 'True }
+              }
+            }
+          }
+        })
+      }
+    })
+  };
+
+def bfs_loop: for(E, A, R) Fn(Array(Int), Int, Int, SearchState, Array(Entity(E, A)), Array(Relation(E, A, R)), Bool) -> Tuple([Array(Bool), Array(Option(Tuple([Int, Int]))), Bool]) =
+  fn(level, depth, max_depth, state, entities, relations, safe_only) {
+    if depth >= max_depth {
+      (state.visited, state.pred, has_unvisited_successor(level, state.visited, entities, relations, safe_only))
+    } else if array.length(level) == 0 {
+      (state.visited, state.pred, 'False)
+    } else {
+      let next_state = expand_level(level, state, entities, relations, safe_only);
+      bfs_loop(next_state.next, depth + 1, max_depth, next_state, entities, relations, safe_only)
+    }
+  };
+
+# 返回 (pred, truncated)。pred 按实体索引记录 (父索引, 关系索引)；base 与不可达节点为 'None
+def bfs: for(E, A, R) Fn(Int, Array(Entity(E, A)), Array(Relation(E, A, R)), Bool, Int) -> Tuple([Array(Option(Tuple([Int, Int]))), Bool]) =
+  fn(base, entities, relations, safe_only, max_depth) {
+    let none_pred: Option(Tuple([Int, Int])) = 'None;
+    let initial: SearchState = {
+      visited: array.map(entities, fn(ent) { 'False }),
+      pred: array.map(entities, fn(ent) { none_pred }),
+      next: [],
+    };
+    let visited0 = array_set(initial.visited, base, 'True);
+    let result = bfs_loop([base], 0, max_depth, {visited: visited0, pred: initial.pred, next: []}, entities, relations, safe_only);
+    (result.1, result.2)
+  };
+
+# 从 target 回溯到 base，返回 base -> target 的关系索引序列（不可达返回 'None）
+def reconstruct: Fn(Int, Int, Array(Option(Tuple([Int, Int])))) -> Option(Array(Int)) = fn(target, base, pred) {
+  if target == base {
+    'Some([])
+  } else {
+    match array.get(pred, target) {
+      'None => 'None,
+      'Some(entry) => match entry {
+        'None => 'None,
+        'Some(pp) => match reconstruct(pp.0, base, pred) {
+          'None => 'None,
+          'Some(path) => 'Some(array.push(path, pp.1)),
+        },
+      },
+    }
+  }
+};
+
+# ============ 授权 ============
+
+def authorize_measures: for(M, S, MI) Fn(Array(Request(M, S, MI)), Array(Capability(M, S, MI))) -> Bool =
+  fn(requests, capabilities) {
+    array.fold(requests, 'True, fn(acc, req) {
+      let cap = array.find(capabilities, fn(c) { c.id == req.id });
+      match cap {
+        'None => fail!("missing measure capability", req.subject, req.id),
+        'Some(c) => {
+          if c.authorized(req.subject, req.input) { acc } else { fail!("unauthorized measure request", req.subject, req.id) }
+        }
+      }
+    })
+  };
+
+def authorize_dimensions: for(D, S, DI) Fn(Array(Request(D, S, DI)), Array(Capability(D, S, DI))) -> Bool =
+  fn(requests, capabilities) {
+    array.fold(requests, 'True, fn(acc, req) {
+      let cap = array.find(capabilities, fn(c) { c.id == req.id });
+      match cap {
+        'None => fail!("missing dimension capability", req.subject, req.id),
+        'Some(c) => {
+          if c.authorized(req.subject, req.input) { acc } else { fail!("unauthorized dimension request", req.subject, req.id) }
+        }
+      }
+    })
+  };
+
+def authorize_filters: for(D, S, FI) Fn(Array(FilterRequest(D, S, FI)), Array(FilterCapability(D, S, FI))) -> Bool =
+  fn(requests, capabilities) {
+    array.fold(requests, 'True, fn(acc, req) {
+      let cap = array.find(capabilities, fn(c) { c.id == req.id });
+      match cap {
+        'None => fail!("missing filter capability", req.subject, req.id),
+        'Some(c) => {
+          if c.authorized(req.subject, req.input) { acc } else { fail!("unauthorized filter request", req.subject, req.id) }
+        }
+      }
+    })
+  };
+
+# ============ base grain 解析 ============
+
+# 一次请求的 measure 决定 Plan 的 base grain：所有 measure 必须位于同一实体，
+# 不兼容时明确失败。
+def resolve_base: for(M, D, E, A, R, S, MI, DI, FI) Fn(
+  Knowledge(M, D, E, A, R, S, MI, DI, FI),
+  Array(Request(M, S, MI)),
+) -> Entity(E, A) = fn(knowledge, measure_requests) {
+  if array.length(measure_requests) == 0 {
+    fail!("query request must include at least one measure to determine base grain")
+  } else {
+    let first = expect_some(array.get(measure_requests, 0), "internal: measure request missing");
+    let first_measure = match find_measure(first.id, knowledge.measures) {
+      'None => fail!("missing measure", first.subject, first.id),
+      'Some(m) => m,
+    };
+    let base_id = first_measure.entity;
+    let _compatible = array.fold(measure_requests, 'True, fn(acc, req) {
+      let m = match find_measure(req.id, knowledge.measures) {
+        'None => fail!("missing measure", req.subject, req.id),
+        'Some(x) => x,
+      };
+      if m.entity != base_id {
+        fail!("measures have incompatible base entities", req.subject, req.id)
+      } else {
+        acc
+      }
+    });
+    match find_entity(base_id, knowledge.entities) {
+      'None => fail!("measure entity missing from knowledge entities"),
+      'Some(e) => e,
+    }
+  }
+};
+
+# ============ Lowering ============
+
+def measure_expr: for(M, E, A) Fn(Measure(M, E, A), Entity(E, A), String) -> qb.Expr =
+  fn(measure, base_entity, base_alias) {
+    let attr = expect_some(find_attribute(base_entity, measure.attribute), "measure attribute missing");
+    match measure.kind {
+      'Plain => qb.col_expr(base_alias, attr.column),
+      'Aggregate(agg) => qb.agg_call(agg.function, 'Some(qb.col_expr(base_alias, attr.column)), agg.distinct),
+    }
+  };
+
+# 维度表达式 -> qb.Expr。受控标量表达式使用 qb.ScalarFunction 与 qb.Val 字面量，
+# 不保存预渲染 SQL；属性实参必须属于维度实体。
+def build_dimension_expr: for(E, A) Fn(DimensionExpr(E, A), String, Entity(E, A)) -> qb.Expr =
+  fn(dexpr, dim_alias, ent) {
+    match dexpr {
+      'Attribute(ref) => {
+        let attr = expect_some(find_attribute(ent, ref.attribute), "dimension attribute missing");
+        qb.col_expr(dim_alias, attr.column)
+      },
+      'Computed(ce) => {
+        let args = array.map(ce.args, fn(arg) {
+          match arg {
+            'Literal(value) => qb.lit(value),
+            'Attribute(ref) => {
+              if ref.entity != ent.id {
+                fail!("computed dimension argument attribute is not on the dimension entity", ref.entity, ref.attribute)
+              } else {
+                let attr = expect_some(find_attribute(ent, ref.attribute), "computed dimension attribute missing");
+                qb.col_expr(dim_alias, attr.column)
+              }
+            }
+          }
+        });
+        qb.scalar_call(ce.function, args)
+      }
+    }
+  };
+
+def join_for_edge: for(E, A, R) Fn(Int, Array(Entity(E, A)), Array(Relation(E, A, R))) -> qb.Join =
+  fn(ri, entities, relations) {
+    let rel = expect_some(array.get(relations, ri), "relation index out of range");
+    let left_entity = expect_some(find_entity(rel.left, entities), "relation left entity missing");
+    let right_entity = expect_some(find_entity(rel.right, entities), "relation right entity missing");
+    let on = array.map(rel.mapping.conditions, fn(pair) {
+      let left_col = expect_some(find_attribute(left_entity, pair.left.attribute), "relation left attribute missing").column;
+      let right_col = expect_some(find_attribute(right_entity, pair.right.attribute), "relation right attribute missing").column;
+      {left: qb.col_ref(left_entity.source.alias, left_col), right: qb.col_ref(right_entity.source.alias, right_col)}
+    });
+    {
+      kind: rel.join_kind,
+      right: qb.source(right_entity.source.table, right_entity.source.alias),
+      on: on,
+    }
+  };
+
+def classify_issue: Fn(qb.ValidationIssue) -> String = fn(issue) {
+  match issue {
+    'Profile(message) => `profile violation: \{message}`,
+    'Structure(message) => `structure violation: \{message}`,
+    'Identifier(message) => `invalid identifier: \{message}`,
+    'Transform(message) => `transform failure: \{message}`,
+  }
+};
+
+# 组装维度/筛选/排序共享的路径解析：返回 (Dimension, 表达式, joins, added_edges)。
+# 路径选择：最短边数优先，同长度目录索引序列字典序最小；多目标按请求顺序合并，
+# 共享边只保留首次出现。筛选维度可以不在 projections/group_by 中，但同样需要
+# 安全路径与必要 join。
+def resolve_dimension: for(M, D, E, A, R, S, MI, DI, FI) Fn(
+  Knowledge(M, D, E, A, R, S, MI, DI, FI),
+  D,
+  S,
+  Int,
+  String,
+  Array(Option(Tuple([Int, Int]))),
+  Array(Option(Tuple([Int, Int]))),
+  Array(qb.Join),
+  Array(Int),
+) -> Tuple([Dimension(D, E, A), qb.Expr, Array(qb.Join), Array(Int)]) = fn(knowledge, dim_id, subject, base_index, base_alias, safe_pred, all_pred, joins, added_edges) {
+  let dim = match find_dimension(dim_id, knowledge.dimensions) {
+    'None => fail!("missing dimension", subject, dim_id),
+    'Some(d) => d,
+  };
+  let dim_index = expect_some(find_entity_index(dim.entity, knowledge.entities), "dimension entity missing");
+  let chosen: Tuple([Option(Array(Int)), String]) = if dim_index == base_index {
+    ('Some([]), base_alias)
+  } else {
+    let safe_path = reconstruct(dim_index, base_index, safe_pred);
+    match safe_path {
+      'Some(p) => ('Some(p), expect_some(find_entity(dim.entity, knowledge.entities), "dimension entity missing").source.alias),
+      'None => {
+        let all_path = reconstruct(dim_index, base_index, all_pred);
+        match all_path {
+          'Some(_) => fail!("dimension grain conflict: only reachable via fan-out relations", subject, dim_id),
+          'None => fail!("dimension entity not reachable from base entity", subject, dim_id),
+        }
+      }
+    }
+  };
+  let path = match chosen.0 {
+    'Some(p) => p,
+    'None => fail!("internal: dimension path missing"),
+  };
+  let ent = expect_some(find_entity(dim.entity, knowledge.entities), "dimension entity missing");
+  let expr = build_dimension_expr(dim.expr, chosen.1, ent);
+  let joined = array.fold(path, (joins, added_edges), fn(acc, ri) {
+    if array.any(acc.1, fn(x) { x == ri }) {
+      acc
+    } else {
+      (array.push(acc.0, join_for_edge(ri, knowledge.entities, knowledge.relations)), array.push(acc.1, ri))
+    }
+  });
+  (dim, expr, joined.0, joined.1)
+};
+
+# 组装维度：路径选择 + 投影/分组/join 合并
+type BuildState = struct {
+  projections: Array(qb.Projection),
+  group_by: Array(qb.Expr),
+  joins: Array(qb.Join),
+  added_edges: Array(Int),
+};
+
+def build_dimension: for(M, D, E, A, R, S, MI, DI, FI) Fn(
+  Knowledge(M, D, E, A, R, S, MI, DI, FI),
+  Request(D, S, DI),
+  Int,
+  String,
+  Array(Option(Tuple([Int, Int]))),
+  Array(Option(Tuple([Int, Int]))),
+  BuildState,
+) -> BuildState = fn(knowledge, req, base_index, base_alias, safe_pred, all_pred, state) {
+  let resolved = resolve_dimension(knowledge, req.id, req.subject, base_index, base_alias, safe_pred, all_pred, state.joins, state.added_edges);
+  {
+    projections: array.push(state.projections, {expr: resolved.1, alias: qb.ident(resolved.0.alias)}),
+    group_by: array.push(state.group_by, resolved.1),
+    joins: resolved.2,
+    added_edges: resolved.3,
+  }
+};
+
+# 组装筛选：授权（早于路径解析）、领域输入 -> qb.Val、维度安全路径与 join 合并，
+# 生成标准比较表达式。多个筛选按请求顺序由 combine_and 用 And 组合。
+def build_filter: for(M, D, E, A, R, S, MI, DI, FI) Fn(
+  Knowledge(M, D, E, A, R, S, MI, DI, FI),
+  FilterRequest(D, S, FI),
+  Int,
+  String,
+  Array(Option(Tuple([Int, Int]))),
+  Array(Option(Tuple([Int, Int]))),
+  Tuple([BuildState, Array(qb.Expr)]),
+) -> Tuple([BuildState, Array(qb.Expr)]) = fn(knowledge, req, base_index, base_alias, safe_pred, all_pred, acc) {
+  let cap = match array.find(knowledge.filter_capabilities, fn(c) { c.id == req.id }) {
+    'None => fail!("missing filter capability", req.subject, req.id),
+    'Some(c) => c,
+  };
+  let value = cap.to_val(req.input);
+  let resolved = resolve_dimension(knowledge, req.id, req.subject, base_index, base_alias, safe_pred, all_pred, acc.0.joins, acc.0.added_edges);
+  let cond = match req.op {
+    'Eq => qb.scalar_call('Eq, [resolved.1, qb.lit(value)]),
+    'Ge => qb.scalar_call('Ge, [resolved.1, qb.lit(value)]),
+    'Le => qb.scalar_call('Le, [resolved.1, qb.lit(value)]),
+  };
+  let new_state: BuildState = {
+    projections: acc.0.projections,
+    group_by: acc.0.group_by,
+    joins: resolved.2,
+    added_edges: resolved.3,
+  };
+  (new_state, array.push(acc.1, cond))
+};
+
+# 按请求顺序用标准 And 左折叠组合筛选条件；空 -> 'None，单个 -> 'Some(cond)
+def combine_and: Fn(Array(qb.Expr)) -> Option(qb.Expr) = fn(conditions) {
+  let none_expr: Option(qb.Expr) = 'None;
+  array.fold(conditions, none_expr, fn(acc, cond) {
+    match acc {
+      'None => 'Some(cond),
+      'Some(prev) => 'Some(qb.scalar_call('And, [prev, cond])),
+    }
+  })
+};
+
+# 组装排序：只允许引用已经请求的 measure/dimension；表达式取自已解析的规范表达式
+# （measure 的聚合/列表达式、dimension 的列/受控标量表达式），不接受任意表达式。
+# 引用未请求的排序目标以 fail! 原子失败。
+def build_ordering: for(M, D, E, A, R, S, MI, DI, FI) Fn(
+  Knowledge(M, D, E, A, R, S, MI, DI, FI),
+  OrderRequest(M, D),
+  QueryRequest(M, D, S, MI, DI, FI),
+  Entity(E, A),
+  String,
+  Int,
+  Array(Option(Tuple([Int, Int]))),
+  Array(Option(Tuple([Int, Int]))),
+  Tuple([BuildState, Array(qb.OrderItem)]),
+) -> Tuple([BuildState, Array(qb.OrderItem)]) = fn(knowledge, req, request, base_entity, base_alias, base_index, safe_pred, all_pred, acc) {
+  let state = acc.0;
+  match req.target {
+    'Measure(mid) => {
+      let requested = array.any(request.measures, fn(r) { r.id == mid });
+      if !requested {
+        fail!("order target measure not requested", req.target)
+      } else {
+        let measure = match find_measure(mid, knowledge.measures) {
+          'None => fail!("missing measure", req.target),
+          'Some(m) => m,
+        };
+        let item: qb.OrderItem = {expr: measure_expr(measure, base_entity, base_alias), direction: req.direction};
+        (state, array.push(acc.1, item))
+      }
+    },
+    'Dimension(did) => {
+      match array.find(request.dimensions, fn(r) { r.id == did }) {
+        'None => fail!("order target dimension not requested", req.target),
+        'Some(reqdim) => {
+          let resolved = resolve_dimension(knowledge, did, reqdim.subject, base_index, base_alias, safe_pred, all_pred, state.joins, state.added_edges);
+          let new_state: BuildState = {
+            projections: state.projections,
+            group_by: state.group_by,
+            joins: resolved.2,
+            added_edges: resolved.3,
+          };
+          let item: qb.OrderItem = {expr: resolved.1, direction: req.direction};
+          (new_state, array.push(acc.1, item))
+        }
+      }
+    },
+  }
+};
+
+def build_measure_projection: for(M, D, E, A, R, S, MI, DI, FI) Fn(
+  Knowledge(M, D, E, A, R, S, MI, DI, FI),
+  Request(M, S, MI),
+  Entity(E, A),
+  String,
+) -> qb.Projection = fn(knowledge, req, base_entity, base_alias) {
+  let measure = match find_measure(req.id, knowledge.measures) {
+    'None => fail!("missing measure", req.subject, req.id),
+    'Some(m) => m,
+  };
+  if measure.entity != base_entity.id {
+    fail!("measure not on the request base grain", req.subject, req.id)
+  } else {
+    {expr: measure_expr(measure, base_entity, base_alias), alias: qb.ident(measure.alias)}
+  }
+};
+
+def create_plan: for(M, D, E, A, R, S, MI, DI, FI) Fn(Knowledge(M, D, E, A, R, S, MI, DI, FI), QueryRequest(M, D, S, MI, DI, FI)) -> qb.Plan =
+  fn(knowledge, request) {
+    let _authorized_measures = authorize_measures(request.measures, knowledge.measure_capabilities);
+    let _authorized_dimensions = authorize_dimensions(request.dimensions, knowledge.dimension_capabilities);
+    let _authorized_filters = authorize_filters(request.filters, knowledge.filter_capabilities);
+    let base_entity = resolve_base(knowledge, request.measures);
+    let base_index = expect_some(find_entity_index(base_entity.id, knowledge.entities), "internal: base entity index missing");
+    let base_alias = base_entity.source.alias;
+    let base_source = qb.source(base_entity.source.table, base_entity.source.alias);
+    let safe_result = bfs(base_index, knowledge.entities, knowledge.relations, 'True, max_path_depth);
+    let all_result = bfs(base_index, knowledge.entities, knowledge.relations, 'False, max_path_depth);
+    let measure_projections = array.map(request.measures, fn(req) {
+      build_measure_projection(knowledge, req, base_entity, base_alias)
+    });
+    let initial_build: BuildState = {
+      projections: measure_projections,
+      group_by: [],
+      joins: [],
+      added_edges: [],
+    };
+    let built_dims = array.fold(request.dimensions, initial_build, fn(state, req) {
+      build_dimension(knowledge, req, base_index, base_alias, safe_result.0, all_result.0, state)
+    });
+    let filter_result = array.fold(request.filters, (built_dims, []), fn(acc, req) {
+      build_filter(knowledge, req, base_index, base_alias, safe_result.0, all_result.0, acc)
+    });
+    let filter_expr = combine_and(filter_result.1);
+    let ordering_result = array.fold(request.ordering, (filter_result.0, []), fn(acc, req) {
+      build_ordering(knowledge, req, request, base_entity, base_alias, base_index, safe_result.0, all_result.0, acc)
+    });
+    let limit_opt: Option(Int) = match request.limit {
+      'None => 'None,
+      'Some(n) => if n <= 0 { fail!("limit must be a positive integer", request.limit) } else { 'Some(n) },
+    };
+    let plan: qb.Plan = {
+      revision: knowledge.revision,
+      source: base_source,
+      projections: ordering_result.0.projections,
+      filter: filter_expr,
+      joins: ordering_result.0.joins,
+      group_by: ordering_result.0.group_by,
+      ordering: ordering_result.1,
+      limit: limit_opt,
+    };
+    match qb.validate(plan, knowledge.plan_profile) {
+      'Ok(_) => plan,
+      'Err(issue) => fail!(`plan rejected: \{classify_issue(issue)}`, request),
+    }
+  };
+
+# ============ 公共入口 ============
+
+# make_query_creator: 企业知识 -> 查询方意图 -> QueryBuilder Plan
+def make_query_creator: for(M, D, E, A, R, S, MI, DI, FI) Fn(
+  Knowledge(M, D, E, A, R, S, MI, DI, FI),
+) -> Fn(QueryRequest(M, D, S, MI, DI, FI)) -> qb.Plan = fn(knowledge) {
+  fn(request) { create_plan(knowledge, request) }
+};
+
+# ============ 导出 ============
+
+export {
+  SourceRef,
+  AttributeRef,
+  AttributePair,
+  RelationMapping,
+  RelationGrain,
+  Attribute,
+  Entity,
+  Relation,
+  MeasureAgg,
+  MeasureKind,
+  Measure,
+  ScalarArg,
+  ComputedExpr,
+  DimensionExpr,
+  Dimension,
+  Capability,
+  FilterOp,
+  FilterRequest,
+  FilterCapability,
+  OrderTarget,
+  OrderRequest,
+  Knowledge,
+  Request,
+  QueryRequest,
+  source_ref,
+  attribute,
+  entity,
+  attribute_ref,
+  attribute_pair,
+  relation_mapping,
+  relation,
+  measure,
+  scalar_arg_attribute,
+  scalar_arg_literal,
+  computed_expr,
+  dimension_attribute,
+  dimension_computed,
+  dimension,
+  capability,
+  filter_capability,
+  make_query_creator,
+};

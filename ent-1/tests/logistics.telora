@@ -1,1 +1,75 @@
-export def output = "validate rejected enterprise intent";
+# ent-1/tests/logistics.telora
+# 公共契约检查：私有模型可加载、合法请求 lowering 满足覆盖/profile/确定性、
+# 生成的 Query 具有预期的只读 SQL 形状、筛选/排序/limit 能力与 profile 声明、
+# 多 grain 指标目录存在。每个检查是独立具名 export。
+
+import "@src/model.telora" { MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput, knowledge, creator, plan_profile };
+import "ontology/lib.telora" as e;
+import "query-builder/lib.telora" as qb;
+import "std/array" as array;
+import "std/string" as string;
+
+def request: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "check@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: "check@example.com", input: 'All},
+        {id: 'CustomerTier, subject: "check@example.com", input: 'All},
+        {id: 'OriginRegion, subject: "check@example.com", input: 'All},
+        {id: 'CarrierName, subject: "check@example.com", input: 'All},
+        {id: 'ServiceName, subject: "check@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+def plan = creator(request);
+def query = qb.transform_sqlite(plan, plan_profile);
+
+export def revision_check: String = plan.revision;
+
+export def coverage_check: Bool = array.length(plan.projections) == 6
+    && array.length(plan.group_by) == 5
+    && array.length(plan.joins) == 5
+    && array.length(plan.ordering) == 0;
+
+export def validation_check: Bool = match qb.validate(plan, plan_profile) {
+    'Ok(_) => 'True,
+    'Err(_) => 'False,
+};
+
+export def determinism_check: Bool = do {
+    let again = qb.transform_sqlite(plan, plan_profile);
+    query.sql == again.sql && query.bindings == again.bindings
+};
+
+export def sql_shape_check: Bool = string.contains(query.sql, "SELECT")
+    && string.contains(query.sql, "FROM orders")
+    && string.contains(query.sql, "INNER JOIN")
+    && string.contains(query.sql, "GROUP BY");
+
+def expected_bindings: Array(qb.Val) = ['Int(1), 'Int(7), 'Int(1), 'Int(7)];
+
+export def bindings_check: Bool = query.bindings == expected_bindings;
+
+export def multi_grain_check: Bool = array.any(knowledge.measures, fn(m) { m.id == 'DeliveredPackages })
+    && array.any(knowledge.measures, fn(m) { m.id == 'UnitsShipped });
+
+export def filter_capability_check: Bool = array.length(knowledge.filter_capabilities) == 4
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'OrderMonth })
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'CustomerTier })
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'OriginRegion })
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'ProductCategory });
+
+export def profile_check: Bool = array.any(plan_profile.scalar_functions, fn(f) { f == 'Substr })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'Eq })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'Ge })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'Le })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'And })
+    && array.any(plan_profile.aggregate_functions, fn(f) { f == 'Count })
+    && array.any(plan_profile.join_kinds, fn(k) { k == 'Inner })
+    && plan_profile.allow_filter
+    && plan_profile.allow_order_by
+    && plan_profile.allow_limit;

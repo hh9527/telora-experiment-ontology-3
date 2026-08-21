@@ -1,0 +1,120 @@
+# ent-1/src/bin/invalid.telora
+# 非法请求集：每个 export 是一个必须原子失败的场景（run --best-effort 会逐个求值
+# 并收集全部诊断）。任何场景都不发布 Plan/Query；本模块永远不应发布 output。
+#
+# 覆盖：缺失 capability（维度与筛选）、输入变体不匹配、非正 limit、
+# 未请求的排序目标、Order grain 下的 fan-out-only grain 冲突（分组与筛选）。
+
+import "@src/model.telora" { MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput, creator };
+import "ontology/lib.telora" as e;
+
+# 1) 既有回归：OrdersCreated 按 ProductCategory 与 DeliveryException 分组。
+#    ProductCategory 从 Order grain 只能经 fan-out 到达（grain 冲突）；
+#    DeliveryException 没有任何获准 capability（缺失维度能力）。
+def s_grain_group: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'ProductCategory, subject: "invalid@example.com", input: 'All},
+        {id: 'DeliveryException, subject: "invalid@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+# 2) 缺失筛选能力：DeliveryException 的筛选变体在类型上可表达（'Exception），
+#    但没有 filter_capabilities 条目，能力解析必须失败。
+def s_missing_filter_cap: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+        {id: 'DeliveryException, subject: "invalid@example.com", input: 'Exception("Late"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+};
+
+# 3) 输入变体不匹配：OrderMonth 只接受 'Month(...)，'Tier(...) 必须被 to_val 拒绝。
+def s_variant_mismatch: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+        {id: 'OrderMonth, subject: "invalid@example.com", input: 'Tier("Gold"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+};
+
+# 4) 非正 limit：limit 必须是正整数，'Some(0) 必须失败。
+def s_nonpositive_limit: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [],
+    ordering: [],
+    limit: 'Some(0),
+};
+
+# 5) 未请求的排序目标：ordering 只能引用已经请求的 measure/dimension。
+def s_unrequested_ordering: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [],
+    ordering: [
+        {target: 'Dimension('ServiceName), direction: 'Asc},
+    ],
+    limit: 'None,
+};
+
+# 6) Order grain 下 ProductCategory 筛选：能力获准，但 Categories 从 Orders 只能经
+#    fan-out 到达，筛选同样必须判 grain 冲突（不放松既有拒绝语义）。
+def s_order_grain_category_filter: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+        {id: 'ProductCategory, subject: "invalid@example.com", input: 'Category("Electronics"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+};
+
+export def output: String = do {
+    let plan = creator(s_grain_group);
+    `unexpected plan published for invalid request: \{plan.revision}`
+};
+
+export def missing_filter_capability_scenario: String = do {
+    let plan = creator(s_missing_filter_cap);
+    `unexpected plan published for invalid request: \{plan.revision}`
+};
+
+export def filter_variant_mismatch_scenario: String = do {
+    let plan = creator(s_variant_mismatch);
+    `unexpected plan published for invalid request: \{plan.revision}`
+};
+
+export def nonpositive_limit_scenario: String = do {
+    let plan = creator(s_nonpositive_limit);
+    `unexpected plan published for invalid request: \{plan.revision}`
+};
+
+export def unrequested_ordering_scenario: String = do {
+    let plan = creator(s_unrequested_ordering);
+    `unexpected plan published for invalid request: \{plan.revision}`
+};
+
+export def order_grain_product_category_filter_scenario: String = do {
+    let plan = creator(s_order_grain_category_filter);
+    `unexpected plan published for invalid request: \{plan.revision}`
+};

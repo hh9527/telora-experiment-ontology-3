@@ -1,0 +1,15 @@
+import "@src/request.telora" { legal_request };
+import "ent-1/query.telora" as q;
+import "std/codec" as codec;
+import "std/json" as json;
+import "std/result" as result;
+import "std/value" { Value };
+
+# 合法意图：已创建订单数，按订单创建月份、客户等级、发货仓库所属地区分组。
+# 调用公共 lower 得到确定性的只读 Query；输出同时保留完整 SQL 与有序 bindings
+# （通过公共契约保证的 codec/JSON 文本化），不能只输出 SQL。
+export def output: String = do {
+    let query = q.lower(legal_request);
+    let encoded = codec.encode(Value, query) |> result.unwrap;
+    json.stringify(encoded)
+};

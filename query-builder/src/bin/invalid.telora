@@ -1,0 +1,63 @@
+# Showcase: illegal or out-of-profile Plans produce Host diagnostics and no
+# Query. Run with --best-effort to collect every independent diagnostic:
+#   telora run invalid -C query-builder --best-effort
+# The command exits non-zero and never publishes an Entry output.
+import "@src/lib.telora" {
+    Plan, standard_profile, select_profile, read_profile,
+    source, col_ref, col_expr, lit, scalar_call, agg_call, ident,
+    transform_sqlite,
+};
+
+# Violation 1: an equi-join is out of scope for select_profile.
+def join_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: col_expr("o", "id"), alias: ident("id")}],
+        filter: 'None,
+        joins: [
+            {kind: 'Inner, right: source("customers", "c"), on: [
+                {left: col_ref("o", "customer_id"), right: col_ref("c", "id")},
+            ]},
+        ],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+# Violation 2: an aggregate call is out of scope for read_profile.
+def aggregate_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v2",
+        source: source("orders", "o"),
+        projections: [{expr: agg_call('Count, 'None, 'False), alias: ident("order_count")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+# Violation 3: a column references an unknown source alias; the plan is
+# structurally illegal even for standard_profile.
+def unknown_source_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v3",
+        source: source("orders", "o"),
+        projections: [{expr: col_expr("ghost", "id"), alias: ident("id")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+export def output: String = do {
+    let query1 = transform_sqlite(join_plan(), select_profile);
+    let query2 = transform_sqlite(aggregate_plan(), read_profile);
+    let query3 = transform_sqlite(unknown_source_plan(), standard_profile);
+    `unexpected query: \{query1.sql} \{query2.sql} \{query3.sql}`
+};

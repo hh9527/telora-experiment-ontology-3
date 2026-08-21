@@ -1,0 +1,9 @@
+import "@src/request.telora" { illegal_request };
+import "ent-1/query.telora" as q;
+
+# 非法意图：已创建订单数，按所含商品的商品类别分组。
+# 契约明确 ProductCategory 从 Order grain 只能经 grain 扩张到达，与 Order grain
+# 指标（OrdersCreated）组合会失败（grain conflict）。忠实表达该意图，不删除
+# 商品类别、不改变指标 grain、不换成其他维度。
+# 调用公共 lower 应原子失败：不发布部分 Query、不产生 SQL、无 output。
+export def output: String = q.lower(illegal_request).sql;

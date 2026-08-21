@@ -1,0 +1,32 @@
+# ent-1/src/bin/main.telora
+# 合法请求：OrdersCreated 按 OrderMonth / CustomerTier / OriginRegion /
+# CarrierName / ServiceName 分组，发布 Order grain 的只读 Plan 与 Query。
+
+import "@src/model.telora" { MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput, knowledge, creator, plan_profile };
+import "ontology/lib.telora" as e;
+import "query-builder/lib.telora" as qb;
+import "std/array" as array;
+import "std/string" as string;
+
+def legal_request: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "analyst@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: "analyst@example.com", input: 'All},
+        {id: 'CustomerTier, subject: "analyst@example.com", input: 'All},
+        {id: 'OriginRegion, subject: "analyst@example.com", input: 'All},
+        {id: 'CarrierName, subject: "analyst@example.com", input: 'All},
+        {id: 'ServiceName, subject: "analyst@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+export def output: String = do {
+    let plan = creator(legal_request);
+    let query = qb.transform_sqlite(plan, plan_profile);
+    let join_aliases = string.join(array.map(plan.joins, fn(join) { join.right.alias.text }), ", ");
+    `revision=\{plan.revision}\nprojections=\{array.length(plan.projections)}\njoins=[\{join_aliases}]\ngroup_by=\{array.length(plan.group_by)}\nSQL:\n\{query.sql}`
+};

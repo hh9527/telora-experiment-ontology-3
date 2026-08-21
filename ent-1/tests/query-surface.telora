@@ -1,0 +1,174 @@
+# ent-1/tests/query-surface.telora
+# 公共查询面契约检查：facade 可加载、lowering 确定、Plan/Query 分离一致、
+# 结果可编码、参数化请求（filter + ordering + limit）的 SQL/bindings、
+# 业务值与 N 不内联。每个检查是独立具名 export。
+
+import "@src/query.telora" { Request, lower, MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput };
+import "@src/model.telora" { creator, plan_profile };
+import "query-builder/lib.telora" as qb;
+import "std/codec" as codec;
+import "std/result" as result;
+import "std/value" { Value };
+import "std/json" as json;
+import "std/array" as array;
+import "std/string" as string;
+
+# 通用请求：不针对任何具体隐藏意图
+def request_gen: Request = {
+    measures: [{id: 'OrdersCreated, subject: "check@example.com", input: 'All}],
+    dimensions: [
+        {id: 'CustomerTier, subject: "check@example.com", input: 'All},
+        {id: 'ServiceName, subject: "check@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+# 代表性参数化请求（Host 反馈场景）
+def request_a: Request = {
+    measures: [{id: 'DeliveredPackages, subject: "check@example.com", input: 'All}],
+    dimensions: [{id: 'CarrierName, subject: "check@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "check@example.com", input: 'Month("2026-07"), op: 'Eq},
+        {id: 'OriginRegion, subject: "check@example.com", input: 'Region("华东"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('DeliveredPackages), direction: 'Desc},
+        {target: 'Dimension('CarrierName), direction: 'Asc},
+    ],
+    limit: 'Some(5),
+};
+
+def request_b: Request = {
+    measures: [{id: 'UnitsShipped, subject: "check@example.com", input: 'All}],
+    dimensions: [{id: 'ServiceName, subject: "check@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "check@example.com", input: 'Month("2026-04"), op: 'Ge},
+        {id: 'OrderMonth, subject: "check@example.com", input: 'Month("2026-06"), op: 'Le},
+        {id: 'CustomerTier, subject: "check@example.com", input: 'Tier("Gold"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('UnitsShipped), direction: 'Desc},
+        {target: 'Dimension('ServiceName), direction: 'Asc},
+    ],
+    limit: 'Some(3),
+};
+
+def request_c: Request = {
+    measures: [{id: 'UnitsShipped, subject: "check@example.com", input: 'All}],
+    dimensions: [{id: 'ProductCategory, subject: "check@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "check@example.com", input: 'Month("2026-07"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('UnitsShipped), direction: 'Desc},
+        {target: 'Dimension('ProductCategory), direction: 'Asc},
+    ],
+    limit: 'Some(10),
+};
+
+def query_gen = lower(request_gen);
+def query_a = lower(request_a);
+def query_b = lower(request_b);
+def query_c = lower(request_c);
+
+def expected_a: Array(qb.Val) = ['Int(1), 'Int(7), 'String("2026-07"), 'String("华东"), 'Int(5)];
+def expected_b: Array(qb.Val) = [
+    'Int(1), 'Int(7), 'String("2026-04"),
+    'Int(1), 'Int(7), 'String("2026-06"),
+    'String("Gold"), 'Int(3),
+];
+def expected_c: Array(qb.Val) = ['Int(1), 'Int(7), 'String("2026-07"), 'Int(10)];
+
+export def facade_loads_check: Bool = do {
+    let again = lower(request_gen);
+    query_gen.sql == again.sql && query_gen.bindings == again.bindings
+};
+
+export def plan_query_separation_check: Bool = do {
+    let plan = creator({
+        measures: [{id: 'DeliveredPackages, subject: "check@example.com", input: 'All}],
+        dimensions: [{id: 'CarrierName, subject: "check@example.com", input: 'All}],
+        filters: [
+            {id: 'OrderMonth, subject: "check@example.com", input: 'Month("2026-07"), op: 'Eq},
+            {id: 'OriginRegion, subject: "check@example.com", input: 'Region("华东"), op: 'Eq},
+        ],
+        ordering: [
+            {target: 'Measure('DeliveredPackages), direction: 'Desc},
+            {target: 'Dimension('CarrierName), direction: 'Asc},
+        ],
+        limit: 'Some(5),
+    });
+    let query = qb.transform_sqlite(plan, plan_profile);
+    query.sql == query_a.sql && query.bindings == query_a.bindings
+};
+
+export def profile_check: Bool = match qb.validate(creator({
+    measures: [{id: 'DeliveredPackages, subject: "check@example.com", input: 'All}],
+    dimensions: [{id: 'CarrierName, subject: "check@example.com", input: 'All}],
+    filters: [
+        {id: 'OrderMonth, subject: "check@example.com", input: 'Month("2026-07"), op: 'Eq},
+        {id: 'OriginRegion, subject: "check@example.com", input: 'Region("华东"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('DeliveredPackages), direction: 'Desc},
+        {target: 'Dimension('CarrierName), direction: 'Asc},
+    ],
+    limit: 'Some(5),
+}), plan_profile) {
+    'Ok(_) => 'True,
+    'Err(_) => 'False,
+};
+
+export def encodable_check: Bool = do {
+    let encoded_a = codec.encode(Value, query_a) |> result.is_ok;
+    let encoded_b = codec.encode(Value, query_b) |> result.is_ok;
+    let encoded_c = codec.encode(Value, query_c) |> result.is_ok;
+    let text_a = json.stringify(codec.encode(Value, query_a) |> result.unwrap);
+    encoded_a && encoded_b && encoded_c
+        && string.contains(text_a, "sql") && string.contains(text_a, "bindings")
+};
+
+export def determinism_check: Bool = do {
+    let a2 = lower(request_a);
+    let b2 = lower(request_b);
+    let c2 = lower(request_c);
+    query_a.sql == a2.sql && query_a.bindings == a2.bindings
+        && query_b.sql == b2.sql && query_b.bindings == b2.bindings
+        && query_c.sql == c2.sql && query_c.bindings == c2.bindings
+};
+
+export def parameterized_check: Bool = do {
+    let a_shape = string.contains(query_a.sql, "SELECT")
+        && string.contains(query_a.sql, "FROM packages")
+        && string.contains(query_a.sql, "WHERE")
+        && string.contains(query_a.sql, "GROUP BY")
+        && string.contains(query_a.sql, "ORDER BY")
+        && string.contains(query_a.sql, "LIMIT ?")
+        && string.contains(query_a.sql, "2026-07") == 'False
+        && string.contains(query_a.sql, "华东") == 'False
+        && string.contains(query_a.sql, "LIMIT 5") == 'False
+        && query_a.bindings == expected_a;
+    let b_shape = string.contains(query_b.sql, "SELECT")
+        && string.contains(query_b.sql, "FROM package_items")
+        && string.contains(query_b.sql, "WHERE")
+        && string.contains(query_b.sql, "GROUP BY")
+        && string.contains(query_b.sql, "ORDER BY")
+        && string.contains(query_b.sql, "LIMIT ?")
+        && string.contains(query_b.sql, "2026-04") == 'False
+        && string.contains(query_b.sql, "2026-06") == 'False
+        && string.contains(query_b.sql, "Gold") == 'False
+        && string.contains(query_b.sql, "LIMIT 3") == 'False
+        && query_b.bindings == expected_b;
+    let c_shape = string.contains(query_c.sql, "SELECT")
+        && string.contains(query_c.sql, "FROM package_items")
+        && string.contains(query_c.sql, "WHERE")
+        && string.contains(query_c.sql, "GROUP BY")
+        && string.contains(query_c.sql, "ORDER BY")
+        && string.contains(query_c.sql, "LIMIT ?")
+        && string.contains(query_c.sql, "2026-07") == 'False
+        && string.contains(query_c.sql, "LIMIT 10") == 'False
+        && query_c.bindings == expected_c;
+    a_shape && b_shape && c_shape
+};

@@ -1,0 +1,35 @@
+import "ent-1/query.telora" as q;
+
+# 合法意图：统计已创建订单数，并按订单创建月份、客户等级、发货仓库所属地区分组。
+# 对应公共词汇：OrdersCreated（Order grain）+ OrderMonth + CustomerTier + OriginRegion。
+# 意图不含筛选/排序/Top N，按教程写法使用 filters: []、ordering: []、limit: 'None。
+export def legal_request: q.Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "analyst@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: "analyst@example.com", input: 'All},
+        {id: 'CustomerTier, subject: "analyst@example.com", input: 'All},
+        {id: 'OriginRegion, subject: "analyst@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+# 非法意图：统计已创建订单数，并按所含商品的商品类别分组。
+# 对应公共词汇：OrdersCreated（Order grain）+ ProductCategory。
+# 契约明确 ProductCategory 从 Order grain 只能经 grain 扩张到达，与 Order grain
+# 指标组合会失败（分组与筛选都失败）。忠实保留该组合，不删除商品类别、不改变
+# 指标 grain、不换成其他维度。
+export def illegal_request: q.Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "analyst@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'ProductCategory, subject: "analyst@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};

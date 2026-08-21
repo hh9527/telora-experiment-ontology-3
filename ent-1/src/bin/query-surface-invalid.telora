@@ -1,0 +1,116 @@
+# ent-1/src/bin/query-surface-invalid.telora
+# 公共查询面非法请求集：每个 export 是一个必须原子失败的场景
+# （run --best-effort 会逐个求值并收集全部诊断）。任何场景都不发布 Query；
+# 本模块永远不应发布 output。
+#
+# 覆盖：缺失筛选能力、输入变体不匹配、非正 limit、未请求的排序目标、
+# Order grain 下的 fan-out-only grain 冲突（分组与筛选）。
+
+import "@src/query.telora" { Request, lower, MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput };
+
+# 1) 缺失筛选能力：CarrierName 没有 filter_capabilities 条目，能力解析必须失败。
+def s_missing_filter_cap: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+        {id: 'CarrierName, subject: "invalid@example.com", input: 'Region("华东"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+};
+
+# 2) 输入变体不匹配：OrderMonth 只接受 'Month(...)，'Tier(...) 必须被拒绝。
+def s_variant_mismatch: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+        {id: 'OrderMonth, subject: "invalid@example.com", input: 'Tier("Gold"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+};
+
+# 3) 非正 limit：limit 必须是正整数，'Some(0) 必须失败。
+def s_nonpositive_limit: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [],
+    ordering: [],
+    limit: 'Some(0),
+};
+
+# 4) 未请求的排序目标：ordering 只能引用已经请求的 measure/dimension。
+def s_unrequested_ordering: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [],
+    ordering: [
+        {target: 'Dimension('ServiceName), direction: 'Asc},
+    ],
+    limit: 'None,
+};
+
+# 5) Order grain + ProductCategory 分组：从 Order 只能经 fan-out 到达，grain 冲突。
+def s_order_grain_category_dim: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'ProductCategory, subject: "invalid@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+# 6) Order grain + ProductCategory 筛选：能力获准但同样只能经 fan-out 到达，
+#    筛选必须原子失败（不放松既有拒绝语义）。
+def s_order_grain_category_filter: Request = {
+    measures: [
+        {id: 'OrdersCreated, subject: "invalid@example.com", input: 'All},
+    ],
+    dimensions: [],
+    filters: [
+        {id: 'ProductCategory, subject: "invalid@example.com", input: 'Category("Electronics"), op: 'Eq},
+    ],
+    ordering: [],
+    limit: 'None,
+};
+
+export def output: String = do {
+    let query = lower(s_order_grain_category_dim);
+    `unexpected query published: \{query.sql}`
+};
+
+export def missing_filter_capability_scenario: String = do {
+    let query = lower(s_missing_filter_cap);
+    `unexpected query published: \{query.sql}`
+};
+
+export def variant_mismatch_scenario: String = do {
+    let query = lower(s_variant_mismatch);
+    `unexpected query published: \{query.sql}`
+};
+
+export def nonpositive_limit_scenario: String = do {
+    let query = lower(s_nonpositive_limit);
+    `unexpected query published: \{query.sql}`
+};
+
+export def unrequested_ordering_scenario: String = do {
+    let query = lower(s_unrequested_ordering);
+    `unexpected query published: \{query.sql}`
+};
+
+export def order_grain_category_filter_scenario: String = do {
+    let query = lower(s_order_grain_category_filter);
+    `unexpected query published: \{query.sql}`
+};

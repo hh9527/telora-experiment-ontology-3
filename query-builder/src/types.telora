@@ -1,0 +1,224 @@
+# Core public types for QueryBuilder: standard Plan operators, PlanProfile,
+# validation issues and the SQLite Query result.
+#
+# This module is intentionally free of ontology or enterprise facts. It only
+# defines the dialect-neutral Plan vocabulary plus the SQLite Query shape.
+import "std/regex" as regex;
+
+# --- SQL identifier -------------------------------------------------------
+
+def sql_identifier_pattern = regex.compile(r"^[A-Za-z_][A-Za-z0-9_]*$");
+
+# Whole-string check for the SQLite identifier characters accepted by this
+# package: [A-Za-z_][A-Za-z0-9_]*.
+export def is_sql_identifier: Fn(String) -> Bool = fn(text) {
+    regex.is_match(sql_identifier_pattern, text)
+};
+
+# Ident is a nominal wrapper around a validated SQLite identifier. SQL
+# identifiers and user values are separated at the type level: identifiers
+# flow through Ident, runtime values flow through Val and always end up in
+# Query.bindings.
+type Ident = struct {
+    text: String,
+};
+
+# Safe constructor: rejects text that is not a valid SQLite identifier.
+export def ident: Fn(String) -> Ident = fn(text) {
+    if is_sql_identifier(text) {
+        {text}
+    } else {
+        fail!("invalid SQL identifier", text)
+    }
+};
+
+# --- Runtime values --------------------------------------------------------
+
+# Val is the closed set of runtime values supported by this package. Bytes is
+# deliberately excluded. Every Val inside a Plan is lowered to a `?` placeholder
+# and appears in Query.bindings; it is never escaped into SQL text.
+type Val = enum {
+    'String(String),
+    'Int(Int),
+    'Float(Float),
+    'Bool(Bool),
+};
+
+# Result of transform_sqlite. sql contains only identifiers, operators and `?`
+# placeholders; every runtime value lives in bindings in placeholder order.
+type Query = struct {
+    sql: String,
+    bindings: Array(Val),
+};
+
+# --- Standard operators -----------------------------------------------------
+
+# A data source is a table with a mandatory alias. Column references use the
+# alias, never the physical table name, so every referenced source is explicit.
+type Source = struct {
+    name: Ident,
+    alias: Ident,
+};
+
+# Column reference: alias.column.
+type ColumnRef = struct {
+    source: Ident,
+    column: Ident,
+};
+
+# Closed vocabulary of scalar functions. Comparison and logic operators are
+# scalar functions too so that filters can be expressed uniformly. All names
+# map to SQLite syntax.
+type ScalarFunction = enum {
+    'Abs, 'Round, 'Floor, 'Ceil,
+    'Lower, 'Upper, 'Length, 'Trim, 'Substr, 'Coalesce,
+    'Eq, 'Ne, 'Lt, 'Le, 'Gt, 'Ge,
+    'And, 'Or, 'Not,
+};
+
+# Closed vocabulary of aggregate functions.
+type AggFunction = enum {
+    'Count, 'Sum, 'Avg, 'Min, 'Max,
+};
+
+# Aggregate call. arg is 'None only for COUNT(*); every other aggregate
+# requires an argument. distinct is only meaningful with an argument.
+type AggCall = struct {
+    function: AggFunction,
+    arg: Option(Expr),
+    distinct: Bool,
+};
+
+# Scalar call with positional arguments.
+type ScalarCall = struct {
+    function: ScalarFunction,
+    args: Array(Expr),
+};
+
+# Expression: a column, a bound literal, a scalar call or an aggregate call.
+type Expr = enum {
+    'Column(ColumnRef),
+    'Literal(Val),
+    'ScalarCall(ScalarCall),
+    'AggCall(AggCall),
+};
+
+# Join kinds supported by the SQLite backend.
+type JoinKind = enum {
+    'Inner,
+    'Left,
+};
+
+# One equi-join condition: left = right.
+type EquiCondition = struct {
+    left: ColumnRef,
+    right: ColumnRef,
+};
+
+# A join in selection order. All conditions are equi-conditions on columns,
+# so no user value can leak into the ON clause.
+type Join = struct {
+    kind: JoinKind,
+    right: Source,
+    on: Array(EquiCondition),
+};
+
+type OrderDirection = enum {
+    'Asc,
+    'Desc,
+};
+
+# One ORDER BY item.
+type OrderItem = struct {
+    expr: Expr,
+    direction: OrderDirection,
+};
+
+# One projection with its output alias.
+type Projection = struct {
+    expr: Expr,
+    alias: Ident,
+};
+
+# Plan is the complete, ordered query plan. revision is the caller-owned
+# knowledge revision preserved verbatim (for example "logistics-ontology-v1");
+# it does not participate in validation or lowering.
+type Plan = struct {
+    revision: String,
+    source: Source,
+    projections: Array(Projection),
+    filter: Option(Expr),
+    joins: Array(Join),
+    group_by: Array(Expr),
+    ordering: Array(OrderItem),
+    limit: Option(Int),
+};
+
+# --- PlanProfile --------------------------------------------------------------
+
+# PlanProfile is an explicit capability declaration: which standard operators
+# a caller accepts. It is never implicit global state and never changes the
+# semantics of an operator; it only decides whether a Plan is accepted.
+type PlanProfile = struct {
+    allow_joins: Bool,
+    join_kinds: Array(JoinKind),
+    allow_filter: Bool,
+    allow_group_by: Bool,
+    allow_order_by: Bool,
+    allow_limit: Bool,
+    allow_distinct: Bool,
+    scalar_functions: Array(ScalarFunction),
+    aggregate_functions: Array(AggFunction),
+};
+
+# Failure categories produced by validate. Each variant carries a human
+# readable message. Category names are stable: Profile / Structure /
+# Identifier / Transform.
+type ValidationIssue = enum {
+    'Profile(String),
+    'Structure(String),
+    'Identifier(String),
+    'Transform(String),
+};
+
+# --- Constructors --------------------------------------------------------------
+
+# Maximal supported expression depth. The recursive renderer and validator
+# are bounded by this semantic limit so they never depend on Host fuel to
+# terminate.
+export def max_expr_depth: Int = 32;
+
+# Construct a Source from table name and alias strings.
+export def source: Fn(String, String) -> Source = fn(name, alias) {
+    {name: ident(name), alias: ident(alias)}
+};
+
+# Construct a column reference from alias and column strings.
+export def col_ref: Fn(String, String) -> ColumnRef = fn(source_alias, column) {
+    {source: ident(source_alias), column: ident(column)}
+};
+
+# Column expression: alias.column.
+export def col_expr: Fn(String, String) -> Expr = fn(source_alias, column) {
+    'Column(col_ref(source_alias, column))
+};
+
+# Literal expression: the value becomes a `?` placeholder at lowering time.
+export def lit: Fn(Val) -> Expr = fn(value) {
+    'Literal(value)
+};
+
+# Scalar call expression.
+export def scalar_call: Fn(ScalarFunction, Array(Expr)) -> Expr = fn(function, args) {
+    'ScalarCall({function, args})
+};
+
+# Aggregate call expression. Pass 'None for COUNT(*).
+export def agg_call: Fn(AggFunction, Option(Expr), Bool) -> Expr = fn(function, arg, distinct) {
+    'AggCall({function, arg, distinct})
+};
+
+export { Ident, Val, Query, Source, ColumnRef, ScalarFunction, AggFunction,
+         AggCall, ScalarCall, Expr, JoinKind, EquiCondition, Join,
+         OrderDirection, OrderItem, Projection, Plan, PlanProfile,
+         ValidationIssue };

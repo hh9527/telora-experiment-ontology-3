@@ -1,0 +1,29 @@
+import "@src/request.telora" { legal_request, illegal_request };
+import "ent-1/query.telora" as q;
+import "std/array" as array;
+
+# 公共类型检查：两个 Request 都按公共契约构造，类型为 q.Request。
+export def legal_request_type: q.Request = legal_request;
+export def illegal_request_type: q.Request = illegal_request;
+
+# 合法链路检查：合法请求重复 lower 得到确定性 Query（sql 与 bindings 均相同）。
+export def legal_lower_deterministic = do {
+    let first = q.lower(legal_request);
+    let second = q.lower(legal_request);
+    first.sql == second.sql && first.bindings == second.bindings
+};
+
+# 合法链路检查：Query 形状符合公共契约（sql 非空 String，bindings 元素都是 Val 的
+# 四个 variant 之一；若 Val 出现其他 variant，穷尽 match 会在检查期失败）。
+export def legal_lower_shape = do {
+    let query = q.lower(legal_request);
+    let bindings_ok = array.all(query.bindings, fn(value) {
+        match value {
+            'String(_) => 'True,
+            'Int(_) => 'True,
+            'Float(_) => 'True,
+            'Bool(_) => 'True,
+        }
+    });
+    bindings_ok && query.sql != ""
+};

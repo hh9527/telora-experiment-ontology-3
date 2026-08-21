@@ -1,0 +1,288 @@
+# ent-1/src/bin/verify.telora
+# 验证：Plan 覆盖（投影/grouping/join/filter/ordering/limit）、profile 约束、
+# Query 确定性、SQL 形状与参数化 bindings（业务值不内联）、跨 grain 场景
+# （Package / PackageItem）与既有 fan-out grain conflict 语义不放松。
+
+import "@src/model.telora" { MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput, knowledge, creator, plan_profile };
+import "ontology/lib.telora" as e;
+import "query-builder/lib.telora" as qb;
+import "std/array" as array;
+import "std/string" as string;
+
+# --- 场景 0：Order grain 合法场景（DOMAIN 可见验收） ---------------------------
+
+def legal_request: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'OrdersCreated, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'OrderMonth, subject: "verify@example.com", input: 'All},
+        {id: 'CustomerTier, subject: "verify@example.com", input: 'All},
+        {id: 'OriginRegion, subject: "verify@example.com", input: 'All},
+        {id: 'CarrierName, subject: "verify@example.com", input: 'All},
+        {id: 'ServiceName, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [],
+    ordering: [],
+    limit: 'None,
+};
+
+# --- 场景 A：Package grain（DeliveredPackages）-------------------------------
+# 筛选月份等于 2026-07、地区等于 华东，按 CarrierName 分组，指标降序 + 名称升序，limit 5。
+
+def scenario_a: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'DeliveredPackages, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'CarrierName, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [
+        {id: 'OrderMonth, subject: "verify@example.com", input: 'Month("2026-07"), op: 'Eq},
+        {id: 'OriginRegion, subject: "verify@example.com", input: 'Region("华东"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('DeliveredPackages), direction: 'Desc},
+        {target: 'Dimension('CarrierName), direction: 'Asc},
+    ],
+    limit: 'Some(5),
+};
+
+# --- 场景 B：PackageItem grain（UnitsShipped）---------------------------------
+# 筛选月份 Ge 2026-04、Le 2026-06 且客户等级等于 Gold，按 ServiceName 分组，
+# 指标降序 + 名称升序，limit 3。
+
+def scenario_b: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'UnitsShipped, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'ServiceName, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [
+        {id: 'OrderMonth, subject: "verify@example.com", input: 'Month("2026-04"), op: 'Ge},
+        {id: 'OrderMonth, subject: "verify@example.com", input: 'Month("2026-06"), op: 'Le},
+        {id: 'CustomerTier, subject: "verify@example.com", input: 'Tier("Gold"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('UnitsShipped), direction: 'Desc},
+        {target: 'Dimension('ServiceName), direction: 'Asc},
+    ],
+    limit: 'Some(3),
+};
+
+# --- 场景 C：PackageItem grain + ProductCategory（安全可达）-------------------
+# 筛选月份等于 2026-07，按 ProductCategory 分组，指标降序 + 名称升序，limit 10。
+# 从 PackageItem grain 经 PackageItem -> Product -> Category 安全路径可达，必须成功。
+
+def scenario_c: e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    measures: [
+        {id: 'UnitsShipped, subject: "verify@example.com", input: 'All},
+    ],
+    dimensions: [
+        {id: 'ProductCategory, subject: "verify@example.com", input: 'All},
+    ],
+    filters: [
+        {id: 'OrderMonth, subject: "verify@example.com", input: 'Month("2026-07"), op: 'Eq},
+    ],
+    ordering: [
+        {target: 'Measure('UnitsShipped), direction: 'Desc},
+        {target: 'Dimension('ProductCategory), direction: 'Asc},
+    ],
+    limit: 'Some(10),
+};
+
+# --- 通用检查器 ---------------------------------------------------------------
+
+def covers_alias: Fn(Array(qb.Join), String) -> Bool = fn(joins, expected) {
+    array.any(joins, fn(join) { join.right.alias.text == expected })
+};
+
+def validate_ok: Fn(qb.Plan) -> Bool = fn(plan) {
+    match qb.validate(plan, plan_profile) {
+        'Ok(_) => 'True,
+        'Err(_) => 'False,
+    }
+};
+
+def deterministic: Fn(qb.Plan) -> Bool = fn(plan) {
+    let q1 = qb.transform_sqlite(plan, plan_profile);
+    let q2 = qb.transform_sqlite(plan, plan_profile);
+    q1.sql == q2.sql && q1.bindings == q2.bindings
+};
+
+def sql_has: Fn(String, String) -> Bool = fn(sql, needle) {
+    string.contains(sql, needle)
+};
+
+def sql_lacks: Fn(String, String) -> Bool = fn(sql, needle) {
+    string.contains(sql, needle) == 'False
+};
+
+def bindings_eq: Fn(Array(qb.Val), Array(qb.Val)) -> Bool = fn(actual, expected) {
+    actual == expected
+};
+
+# --- 场景 0 检查（Order grain 合法场景）----------------------------------------
+
+def plan0 = creator(legal_request);
+def query0 = qb.transform_sqlite(plan0, plan_profile);
+
+def join_aliases0 = array.map(plan0.joins, fn(join) { join.right.alias.text });
+
+def revision_ok: Bool = plan0.revision == "logistics-ontology-v1";
+def validation_ok: Bool = validate_ok(plan0);
+def coverage_ok: Bool = array.length(plan0.projections) == 6
+    && array.length(plan0.group_by) == 5
+    && array.length(plan0.joins) == 5
+    && array.length(plan0.ordering) == 0;
+def joins_ok: Bool = covers_alias(plan0.joins, "cu") && covers_alias(plan0.joins, "wh")
+    && covers_alias(plan0.joins, "rg") && covers_alias(plan0.joins, "ca")
+    && covers_alias(plan0.joins, "sl");
+def determinism_ok: Bool = deterministic(plan0);
+def sql_shape_ok: Bool = sql_has(query0.sql, "SELECT")
+    && sql_has(query0.sql, "FROM orders")
+    && sql_has(query0.sql, "INNER JOIN")
+    && sql_has(query0.sql, "GROUP BY")
+    && sql_has(query0.sql, "substr(o.created_at, ?, ?)")
+    && sql_has(query0.sql, "cu.tier")
+    && sql_has(query0.sql, "rg.name")
+    && sql_has(query0.sql, "ca.name")
+    && sql_has(query0.sql, "sl.name");
+def bindings0_ok: Bool = bindings_eq(query0.bindings, ['Int(1), 'Int(7), 'Int(1), 'Int(7)]);
+def multi_grain_ok: Bool = array.any(knowledge.measures, fn(m) { m.id == 'DeliveredPackages })
+    && array.any(knowledge.measures, fn(m) { m.id == 'UnitsShipped });
+
+# --- 场景 A 检查（Package grain）-----------------------------------------------
+
+def plan_a = creator(scenario_a);
+def query_a = qb.transform_sqlite(plan_a, plan_profile);
+def query_a_again = qb.transform_sqlite(plan_a, plan_profile);
+
+def a_revision_ok: Bool = plan_a.revision == "logistics-ontology-v1";
+def a_validation_ok: Bool = validate_ok(plan_a);
+def a_coverage_ok: Bool = array.length(plan_a.projections) == 2
+    && array.length(plan_a.group_by) == 1
+    && array.length(plan_a.joins) == 4
+    && array.length(plan_a.ordering) == 2;
+def a_joins_ok: Bool = covers_alias(plan_a.joins, "o") && covers_alias(plan_a.joins, "ca")
+    && covers_alias(plan_a.joins, "wh") && covers_alias(plan_a.joins, "rg");
+def a_determinism_ok: Bool = query_a.sql == query_a_again.sql && query_a.bindings == query_a_again.bindings;
+def a_sql_shape_ok: Bool = sql_has(query_a.sql, "SELECT")
+    && sql_has(query_a.sql, "FROM packages")
+    && sql_has(query_a.sql, "INNER JOIN")
+    && sql_has(query_a.sql, "WHERE")
+    && sql_has(query_a.sql, "GROUP BY ca.name")
+    && sql_has(query_a.sql, "ORDER BY")
+    && sql_has(query_a.sql, "LIMIT ?")
+    && sql_has(query_a.sql, "substr(o.created_at, ?, ?)")
+    && sql_has(query_a.sql, "rg.name")
+    && sql_has(query_a.sql, "ca.name");
+def a_no_inline_ok: Bool = sql_lacks(query_a.sql, "2026-07")
+    && sql_lacks(query_a.sql, "华东")
+    && sql_lacks(query_a.sql, "LIMIT 5");
+def a_bindings_ok: Bool = bindings_eq(query_a.bindings, [
+    'Int(1), 'Int(7), 'String("2026-07"), 'String("华东"), 'Int(5),
+]);
+
+# --- 场景 B 检查（PackageItem grain）--------------------------------------------
+
+def plan_b = creator(scenario_b);
+def query_b = qb.transform_sqlite(plan_b, plan_profile);
+def query_b_again = qb.transform_sqlite(plan_b, plan_profile);
+
+def b_revision_ok: Bool = plan_b.revision == "logistics-ontology-v1";
+def b_validation_ok: Bool = validate_ok(plan_b);
+def b_coverage_ok: Bool = array.length(plan_b.projections) == 2
+    && array.length(plan_b.group_by) == 1
+    && array.length(plan_b.joins) == 4
+    && array.length(plan_b.ordering) == 2;
+def b_joins_ok: Bool = covers_alias(plan_b.joins, "pk") && covers_alias(plan_b.joins, "o")
+    && covers_alias(plan_b.joins, "sl") && covers_alias(plan_b.joins, "cu");
+def b_determinism_ok: Bool = query_b.sql == query_b_again.sql && query_b.bindings == query_b_again.bindings;
+def b_sql_shape_ok: Bool = sql_has(query_b.sql, "SELECT")
+    && sql_has(query_b.sql, "FROM package_items")
+    && sql_has(query_b.sql, "INNER JOIN")
+    && sql_has(query_b.sql, "WHERE")
+    && sql_has(query_b.sql, "GROUP BY sl.name")
+    && sql_has(query_b.sql, "ORDER BY")
+    && sql_has(query_b.sql, "LIMIT ?")
+    && sql_has(query_b.sql, "substr(o.created_at, ?, ?)")
+    && sql_has(query_b.sql, "cu.tier")
+    && sql_has(query_b.sql, "sl.name");
+def b_no_inline_ok: Bool = sql_lacks(query_b.sql, "2026-04")
+    && sql_lacks(query_b.sql, "2026-06")
+    && sql_lacks(query_b.sql, "Gold")
+    && sql_lacks(query_b.sql, "LIMIT 3");
+def b_bindings_ok: Bool = bindings_eq(query_b.bindings, [
+    'Int(1), 'Int(7), 'String("2026-04"),
+    'Int(1), 'Int(7), 'String("2026-06"),
+    'String("Gold"), 'Int(3),
+]);
+
+# --- 场景 C 检查（PackageItem grain + ProductCategory）--------------------------
+
+def plan_c = creator(scenario_c);
+def query_c = qb.transform_sqlite(plan_c, plan_profile);
+def query_c_again = qb.transform_sqlite(plan_c, plan_profile);
+
+def c_revision_ok: Bool = plan_c.revision == "logistics-ontology-v1";
+def c_validation_ok: Bool = validate_ok(plan_c);
+def c_coverage_ok: Bool = array.length(plan_c.projections) == 2
+    && array.length(plan_c.group_by) == 1
+    && array.length(plan_c.joins) == 4
+    && array.length(plan_c.ordering) == 2;
+def c_joins_ok: Bool = covers_alias(plan_c.joins, "pr") && covers_alias(plan_c.joins, "ct")
+    && covers_alias(plan_c.joins, "pk") && covers_alias(plan_c.joins, "o");
+def c_determinism_ok: Bool = query_c.sql == query_c_again.sql && query_c.bindings == query_c_again.bindings;
+def c_sql_shape_ok: Bool = sql_has(query_c.sql, "SELECT")
+    && sql_has(query_c.sql, "FROM package_items")
+    && sql_has(query_c.sql, "INNER JOIN")
+    && sql_has(query_c.sql, "WHERE")
+    && sql_has(query_c.sql, "GROUP BY ct.name")
+    && sql_has(query_c.sql, "ORDER BY")
+    && sql_has(query_c.sql, "LIMIT ?")
+    && sql_has(query_c.sql, "substr(o.created_at, ?, ?)")
+    && sql_has(query_c.sql, "ct.name");
+def c_no_inline_ok: Bool = sql_lacks(query_c.sql, "2026-07")
+    && sql_lacks(query_c.sql, "LIMIT 10");
+def c_bindings_ok: Bool = bindings_eq(query_c.bindings, [
+    'Int(1), 'Int(7), 'String("2026-07"), 'Int(10),
+]);
+
+# --- profile 与筛选能力目录检查 --------------------------------------------------
+
+def profile_ok: Bool = array.any(plan_profile.scalar_functions, fn(f) { f == 'Substr })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'Eq })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'Ge })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'Le })
+    && array.any(plan_profile.scalar_functions, fn(f) { f == 'And })
+    && array.any(plan_profile.aggregate_functions, fn(f) { f == 'Count })
+    && array.any(plan_profile.join_kinds, fn(k) { k == 'Inner })
+    && plan_profile.allow_filter
+    && plan_profile.allow_order_by
+    && plan_profile.allow_limit;
+
+def filter_caps_ok: Bool = array.length(knowledge.filter_capabilities) == 4
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'OrderMonth })
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'CustomerTier })
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'OriginRegion })
+    && array.any(knowledge.filter_capabilities, fn(c) { c.id == 'ProductCategory });
+
+def all_ok: Bool = revision_ok && validation_ok && coverage_ok && joins_ok
+    && determinism_ok && sql_shape_ok && bindings0_ok && multi_grain_ok
+    && a_revision_ok && a_validation_ok && a_coverage_ok && a_joins_ok
+    && a_determinism_ok && a_sql_shape_ok && a_no_inline_ok && a_bindings_ok
+    && b_revision_ok && b_validation_ok && b_coverage_ok && b_joins_ok
+    && b_determinism_ok && b_sql_shape_ok && b_no_inline_ok && b_bindings_ok
+    && c_revision_ok && c_validation_ok && c_coverage_ok && c_joins_ok
+    && c_determinism_ok && c_sql_shape_ok && c_no_inline_ok && c_bindings_ok
+    && profile_ok && filter_caps_ok;
+
+export def output: String = do {
+    if all_ok {
+        `verify ok: revision=\{plan0.revision} projections0=\{array.length(plan0.projections)} joins0=\{array.length(plan0.joins)} group0=\{array.length(plan0.group_by)} bindings0=\{array.length(query0.bindings)}; A joins=\{array.length(plan_a.joins)} A bindings=\{array.length(query_a.bindings)}; B joins=\{array.length(plan_b.joins)} B bindings=\{array.length(query_b.bindings)}; C joins=\{array.length(plan_c.joins)} C bindings=\{array.length(query_c.bindings)}; profile_ok filter_caps_ok\nSQL0:\n\{query0.sql}\n\nSQL A:\n\{query_a.sql}\n\nSQL B:\n\{query_b.sql}\n\nSQL C:\n\{query_c.sql}`
+    } else {
+        fail!("verification failed", plan0, plan_a, plan_b, plan_c)
+    }
+};

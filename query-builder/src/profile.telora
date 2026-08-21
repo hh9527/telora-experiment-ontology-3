@@ -1,0 +1,124 @@
+# PlanProfile construction and capability helpers.
+#
+# A PlanProfile is an explicit capability declaration. The helpers here build
+# common profiles and answer membership questions. They never change operator
+# semantics.
+import "std/array" as array;
+import "@src/types.telora" {
+    PlanProfile, JoinKind, ScalarFunction, AggFunction,
+};
+
+def all_join_kinds: Array(JoinKind) = ['Inner, 'Left];
+
+def all_scalar_functions: Array(ScalarFunction) = [
+    'Abs, 'Round, 'Floor, 'Ceil,
+    'Lower, 'Upper, 'Length, 'Trim, 'Substr, 'Coalesce,
+    'Eq, 'Ne, 'Lt, 'Le, 'Gt, 'Ge,
+    'And, 'Or, 'Not,
+];
+
+def all_aggregate_functions: Array(AggFunction) = ['Count, 'Sum, 'Avg, 'Min, 'Max];
+
+# Full SQLite capability set.
+export def standard_profile: PlanProfile = {
+    allow_joins: 'True,
+    join_kinds: all_join_kinds,
+    allow_filter: 'True,
+    allow_group_by: 'True,
+    allow_order_by: 'True,
+    allow_limit: 'True,
+    allow_distinct: 'True,
+    scalar_functions: all_scalar_functions,
+    aggregate_functions: all_aggregate_functions,
+};
+
+# SELECT ... FROM ... WHERE only: no joins, no grouping, no ordering, no
+# limit, no aggregates and no DISTINCT. Scalar functions remain available for
+# projections and filters.
+export def select_profile: PlanProfile = {
+    allow_joins: 'False,
+    join_kinds: [],
+    allow_filter: 'True,
+    allow_group_by: 'False,
+    allow_order_by: 'False,
+    allow_limit: 'False,
+    allow_distinct: 'False,
+    scalar_functions: all_scalar_functions,
+    aggregate_functions: [],
+};
+
+# Reads-only profile: projections, filters, ordering and limit are allowed;
+# joins, grouping, aggregates and DISTINCT are not.
+export def read_profile: PlanProfile = {
+    allow_joins: 'False,
+    join_kinds: [],
+    allow_filter: 'True,
+    allow_group_by: 'False,
+    allow_order_by: 'True,
+    allow_limit: 'True,
+    allow_distinct: 'False,
+    scalar_functions: all_scalar_functions,
+    aggregate_functions: [],
+};
+
+# Derive a new profile from an existing one by replacing the accepted scalar
+# functions. Other capabilities are copied unchanged.
+export def with_scalar_functions: Fn(PlanProfile, Array(ScalarFunction)) -> PlanProfile = fn(profile, functions) {
+    {
+        allow_joins: profile.allow_joins,
+        join_kinds: profile.join_kinds,
+        allow_filter: profile.allow_filter,
+        allow_group_by: profile.allow_group_by,
+        allow_order_by: profile.allow_order_by,
+        allow_limit: profile.allow_limit,
+        allow_distinct: profile.allow_distinct,
+        scalar_functions: functions,
+        aggregate_functions: profile.aggregate_functions,
+    }
+};
+
+# Derive a new profile from an existing one by replacing the accepted
+# aggregate functions.
+export def with_aggregate_functions: Fn(PlanProfile, Array(AggFunction)) -> PlanProfile = fn(profile, functions) {
+    {
+        allow_joins: profile.allow_joins,
+        join_kinds: profile.join_kinds,
+        allow_filter: profile.allow_filter,
+        allow_group_by: profile.allow_group_by,
+        allow_order_by: profile.allow_order_by,
+        allow_limit: profile.allow_limit,
+        allow_distinct: profile.allow_distinct,
+        scalar_functions: profile.scalar_functions,
+        aggregate_functions: functions,
+    }
+};
+
+# Derive a new profile from an existing one by replacing the accepted join
+# kinds.
+export def with_join_kinds: Fn(PlanProfile, Array(JoinKind)) -> PlanProfile = fn(profile, kinds) {
+    {
+        allow_joins: profile.allow_joins,
+        join_kinds: kinds,
+        allow_filter: profile.allow_filter,
+        allow_group_by: profile.allow_group_by,
+        allow_order_by: profile.allow_order_by,
+        allow_limit: profile.allow_limit,
+        allow_distinct: profile.allow_distinct,
+        scalar_functions: profile.scalar_functions,
+        aggregate_functions: profile.aggregate_functions,
+    }
+};
+
+# Membership helpers used by validate and available to callers that want to
+# inspect a profile before validating.
+export def join_kind_allowed: Fn(Array(JoinKind), JoinKind) -> Bool = fn(kinds, kind) {
+    array.any(kinds, fn(k) { k == kind })
+};
+
+export def scalar_function_allowed: Fn(Array(ScalarFunction), ScalarFunction) -> Bool = fn(functions, function) {
+    array.any(functions, fn(f) { f == function })
+};
+
+export def aggregate_function_allowed: Fn(Array(AggFunction), AggFunction) -> Bool = fn(functions, function) {
+    array.any(functions, fn(f) { f == function })
+};

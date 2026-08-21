@@ -1,1 +1,429 @@
-# A1 replaces this contract probe with executable checks required by GOAL.md.
+# Executable contract checks for the QueryBuilder public API.
+#
+# Every export below is a check that must evaluate without error. Positive
+# checks use transform_sqlite/validate; negative checks use validate (which
+# returns Result) so failures can be asserted instead of failing the module.
+import "std/array" as array;
+import "std/string" as string;
+import "@src/lib.telora" {
+    Plan, PlanProfile, Val, ValidationIssue, ScalarFunction,
+    standard_profile, select_profile, read_profile,
+    with_join_kinds, with_scalar_functions,
+    source, col_ref, col_expr, lit, scalar_call, agg_call, ident,
+    transform_sqlite, validate,
+};
+
+# --- Plans under test ---------------------------------------------------------
+
+def demo_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v3",
+        source: source("orders", "o"),
+        projections: [
+            {expr: col_expr("c", "country"), alias: ident("country")},
+            {expr: agg_call('Count, 'None, 'False), alias: ident("order_count")},
+            {expr: agg_call('Sum, 'Some(col_expr("o", "total")), 'False), alias: ident("total_revenue")},
+        ],
+        filter: 'Some(scalar_call('Gt, [col_expr("o", "total"), lit('Int(50))])),
+        joins: [
+            {kind: 'Inner, right: source("customers", "c"), on: [
+                {left: col_ref("o", "customer_id"), right: col_ref("c", "id")},
+            ]},
+        ],
+        group_by: [col_expr("o", "customer_id"), col_expr("c", "country")],
+        ordering: [
+            {expr: agg_call('Sum, 'Some(col_expr("o", "total")), 'False), direction: 'Desc},
+        ],
+        limit: 'Some(10),
+    }
+};
+
+def simple_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: col_expr("o", "id"), alias: ident("id")}],
+        filter: 'Some(scalar_call('Gt, [col_expr("o", "total"), lit('Int(0))])),
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def left_join_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: col_expr("c", "id"), alias: ident("customer_id")}],
+        filter: 'None,
+        joins: [
+            {kind: 'Left, right: source("customers", "c"), on: [
+                {left: col_ref("o", "customer_id"), right: col_ref("c", "id")},
+            ]},
+        ],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+# COUNT(DISTINCT *) is structurally invalid.
+def bad_distinct_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: agg_call('Count, 'None, 'True), alias: ident("n")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+# NOT with zero arguments has invalid arity.
+def bad_arity_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: scalar_call('Not, []), alias: ident("n")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def negative_limit_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: col_expr("o", "id"), alias: ident("id")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'Some(-1),
+    }
+};
+
+# Bad source alias built by bypassing the safe constructors on purpose.
+def bad_ident_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: {name: {text: "orders"}, alias: {text: "bad name"}},
+        projections: [
+            {expr: 'Column({source: {text: "bad name"}, column: {text: "id"}}), alias: {text: "id"}},
+        ],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def unknown_source_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: col_expr("ghost", "id"), alias: ident("id")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def empty_projection_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def expected_demo_sql =
+    "SELECT c.country AS country, count(*) AS order_count, sum(o.total) AS total_revenue FROM orders AS o INNER JOIN customers AS c ON o.customer_id = c.id WHERE (o.total > ?) GROUP BY o.customer_id, c.country ORDER BY sum(o.total) DESC LIMIT ?";
+
+def expected_demo_bindings: Array(Val) = ['Int(50), 'Int(10)];
+
+# --- Assertion helpers -------------------------------------------------------------
+
+def is_ok: Fn(Result(Plan, ValidationIssue)) -> Bool = fn(result) {
+    match result {
+        'Ok(_) => 'True,
+        'Err(_) => 'False,
+    }
+};
+
+def is_err: Fn(Result(Plan, ValidationIssue)) -> Bool = fn(result) {
+    match result {
+        'Ok(_) => 'False,
+        'Err(_) => 'True,
+    }
+};
+
+def expect_ok: Fn(String, Result(Plan, ValidationIssue)) -> String = fn(label, result) {
+    if is_ok(result) { `\{label}: ok` } else { fail!(`\{label}: expected Ok`, result) }
+};
+
+def expect_profile_err: Fn(String, Result(Plan, ValidationIssue)) -> String = fn(label, result) {
+    match result {
+        'Err('Profile(_)) => `\{label}: ok`,
+        'Err(issue) => fail!(`\{label}: expected Profile issue`, issue),
+        'Ok(_) => fail!(`\{label}: expected Err`),
+    }
+};
+
+def expect_structure_err: Fn(String, Result(Plan, ValidationIssue)) -> String = fn(label, result) {
+    match result {
+        'Err('Structure(_)) => `\{label}: ok`,
+        'Err(issue) => fail!(`\{label}: expected Structure issue`, issue),
+        'Ok(_) => fail!(`\{label}: expected Err`),
+    }
+};
+
+def expect_identifier_err: Fn(String, Result(Plan, ValidationIssue)) -> String = fn(label, result) {
+    match result {
+        'Err('Identifier(_)) => `\{label}: ok`,
+        'Err(issue) => fail!(`\{label}: expected Identifier issue`, issue),
+        'Ok(_) => fail!(`\{label}: expected Err`),
+    }
+};
+
+# --- Checks ------------------------------------------------------------------------
+
+export def test_validate_demo_ok = expect_ok("validate_demo_ok", validate(demo_plan(), standard_profile));
+
+export def test_transform_demo_sql = do {
+    let query = transform_sqlite(demo_plan(), standard_profile);
+    if query.sql == expected_demo_sql {
+        "transform_demo_sql: ok"
+    } else {
+        fail!("transform_demo_sql: sql mismatch", query.sql, expected_demo_sql)
+    }
+};
+
+export def test_transform_demo_bindings = do {
+    let query = transform_sqlite(demo_plan(), standard_profile);
+    if query.bindings == expected_demo_bindings {
+        "transform_demo_bindings: ok"
+    } else {
+        fail!("transform_demo_bindings: bindings mismatch", query.bindings)
+    }
+};
+
+export def test_transform_deterministic = do {
+    let first = transform_sqlite(demo_plan(), standard_profile);
+    let second = transform_sqlite(demo_plan(), standard_profile);
+    if first.sql == second.sql && first.bindings == second.bindings {
+        "transform_deterministic: ok"
+    } else {
+        fail!("transform_deterministic: non-deterministic output", first, second)
+    }
+};
+
+export def test_bindings_are_typed_values = do {
+    let query = transform_sqlite(simple_plan(), select_profile);
+    if array.length(query.bindings) == 1 {
+        match query.bindings[0] {
+            'Int(_) => "bindings_are_typed_values: ok",
+            _ => fail!("bindings_are_typed_values: unexpected binding", query.bindings),
+        }
+    } else {
+        fail!("bindings_are_typed_values: unexpected bindings", query.bindings)
+    }
+};
+
+export def test_placeholder_count_matches_bindings = do {
+    let query = transform_sqlite(simple_plan(), select_profile);
+    let count = array.length(query.bindings);
+    let expected = array.length(string.split(query.sql, "?"));
+    if count + 1 == expected {
+        "placeholder_count_matches_bindings: ok"
+    } else {
+        fail!("placeholder_count_matches_bindings: mismatch", query.sql, query.bindings)
+    }
+};
+
+export def test_select_profile_accepts_simple = expect_ok("select_profile_accepts_simple", validate(simple_plan(), select_profile));
+
+export def test_select_profile_rejects_join = expect_profile_err("select_profile_rejects_join", validate(demo_plan(), select_profile));
+
+export def test_read_profile_rejects_aggregate = expect_profile_err("read_profile_rejects_aggregate", validate(demo_plan(), read_profile));
+
+export def test_inner_only_profile_rejects_left = do {
+    let profile = with_join_kinds(standard_profile, ['Inner]);
+    expect_profile_err("inner_only_profile_rejects_left", validate(left_join_plan(), profile))
+};
+
+export def test_left_join_accepted_by_standard = expect_ok("left_join_accepted_by_standard", validate(left_join_plan(), standard_profile));
+
+export def test_scalar_function_restriction = do {
+    let no_gt: Array(ScalarFunction) = ['Abs, 'Round, 'Floor, 'Ceil, 'Lower, 'Upper, 'Length, 'Trim, 'Substr, 'Coalesce, 'Eq, 'Ne, 'Lt, 'Le, 'Ge, 'And, 'Or, 'Not];
+    let profile = with_scalar_functions(standard_profile, no_gt);
+    expect_profile_err("scalar_function_restriction", validate(simple_plan(), profile))
+};
+
+export def test_count_star_distinct_rejected = expect_structure_err("count_star_distinct_rejected", validate(bad_distinct_plan(), standard_profile));
+
+export def test_scalar_arity_rejected = expect_structure_err("scalar_arity_rejected", validate(bad_arity_plan(), standard_profile));
+
+export def test_negative_limit_rejected = expect_structure_err("negative_limit_rejected", validate(negative_limit_plan(), standard_profile));
+
+export def test_bad_identifier_rejected = expect_identifier_err("bad_identifier_rejected", validate(bad_ident_plan(), standard_profile));
+
+export def test_unknown_source_rejected = expect_structure_err("unknown_source_rejected", validate(unknown_source_plan(), standard_profile));
+
+# Ent-1 requires the final Plan revision to be a String such as
+# "logistics-ontology-v1"; validate must preserve it verbatim.
+def domain_revision_plan: Fn() -> Plan = fn() {
+    {
+        revision: "logistics-ontology-v1",
+        source: source("orders", "o"),
+        projections: [{expr: col_expr("o", "id"), alias: ident("id")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+export def test_domain_revision_preserved = do {
+    let plan = domain_revision_plan();
+    match validate(plan, standard_profile) {
+        'Ok(validated) => {
+            if validated.revision == "logistics-ontology-v1" {
+                "domain_revision_preserved: ok"
+            } else {
+                fail!("domain_revision_preserved: revision changed", validated.revision)
+            }
+        },
+        'Err(issue) => fail!("domain_revision_preserved: unexpected rejection", issue),
+    }
+};
+
+export def test_empty_projection_rejected = expect_structure_err("empty_projection_rejected", validate(empty_projection_plan(), standard_profile));
+
+# --- Substr scalar function --------------------------------------------------------
+
+def substr_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [
+            {expr: scalar_call('Substr, [col_expr("o", "created_at"), lit('Int(1)), lit('Int(7))]), alias: ident("order_month")},
+        ],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def substr2_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [
+            {expr: scalar_call('Substr, [col_expr("o", "created_at"), lit('Int(1))]), alias: ident("month_prefix")},
+        ],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def bad_substr_plan: Fn(Int) -> Plan = fn(arg_count) {
+    let args = if arg_count == 1 {
+        [col_expr("o", "created_at")]
+    } else {
+        [col_expr("o", "created_at"), lit('Int(1)), lit('Int(7)), lit('Int(9))]
+    };
+    {
+        revision: "v2",
+        source: source("orders", "o"),
+        projections: [{expr: scalar_call('Substr, args), alias: ident("order_month")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+export def test_substr_three_args_renders = do {
+    let query = transform_sqlite(substr_plan(), standard_profile);
+    if query.sql == "SELECT substr(o.created_at, ?, ?) AS order_month FROM orders AS o" {
+        "substr_three_args_renders: ok"
+    } else {
+        fail!("substr_three_args_renders: sql mismatch", query.sql)
+    }
+};
+
+export def test_substr_two_args_accepted = expect_ok("substr_two_args_accepted", validate(substr2_plan(), standard_profile));
+
+export def test_substr_one_arg_rejected = expect_structure_err("substr_one_arg_rejected", validate(bad_substr_plan(1), standard_profile));
+
+export def test_substr_four_args_rejected = expect_structure_err("substr_four_args_rejected", validate(bad_substr_plan(4), standard_profile));
+
+export def test_substr_in_profile_whitelist = expect_ok("substr_in_profile_whitelist", validate(substr_plan(), standard_profile));
+
+# --- allow_distinct semantics ---------------------------------------------------------
+
+def distinct_plan: Fn() -> Plan = fn() {
+    {
+        revision: "v1",
+        source: source("orders", "o"),
+        projections: [{expr: agg_call('Count, 'Some(col_expr("o", "customer_id")), 'True), alias: ident("customers")}],
+        filter: 'None,
+        joins: [],
+        group_by: [],
+        ordering: [],
+        limit: 'None,
+    }
+};
+
+def without_distinct: Fn(PlanProfile) -> PlanProfile = fn(profile) {
+    {
+        allow_joins: profile.allow_joins,
+        join_kinds: profile.join_kinds,
+        allow_filter: profile.allow_filter,
+        allow_group_by: profile.allow_group_by,
+        allow_order_by: profile.allow_order_by,
+        allow_limit: profile.allow_limit,
+        allow_distinct: 'False,
+        scalar_functions: profile.scalar_functions,
+        aggregate_functions: profile.aggregate_functions,
+    }
+};
+
+export def test_distinct_accepted_by_standard = expect_ok("distinct_accepted_by_standard", validate(distinct_plan(), standard_profile));
+
+export def test_allow_distinct_false_rejects_distinct = do {
+    let profile = without_distinct(standard_profile);
+    match validate(distinct_plan(), profile) {
+        'Err('Profile(message)) => {
+            if string.contains(message, "DISTINCT") {
+                "allow_distinct_false_rejects_distinct: ok"
+            } else {
+                fail!("allow_distinct_false_rejects_distinct: unexpected message", message)
+            }
+        },
+        'Err(issue) => fail!("allow_distinct_false_rejects_distinct: unexpected issue", issue),
+        'Ok(_) => fail!("allow_distinct_false_rejects_distinct: DISTINCT aggregate accepted"),
+    }
+};

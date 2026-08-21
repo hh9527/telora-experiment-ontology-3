@@ -1,0 +1,391 @@
+# ent-1/src/model.telora
+# 私有企业知识：物流履约分析（EnterpriseKnowledge）
+#
+# 依据 ent-1/DOMAIN.md 建立：封闭 vocabulary、领域事实（实体/属性/关系 mapping）、
+# 指标、维度（含受控计算表达式）、能力目录、PlanProfile 与实例化的 Knowledge。
+# 最终计划 revision 固定为 "logistics-ontology-v1"。
+
+import "ontology/lib.telora" as e;
+import "query-builder/lib.telora" as qb;
+
+# --- 封闭 vocabulary -------------------------------------------------------
+
+type MeasureId = enum {
+    'OrdersCreated,
+    'DeliveredPackages,
+    'UnitsShipped,
+};
+
+type DimensionId = enum {
+    'OrderMonth,
+    'CustomerTier,
+    'OriginRegion,
+    'CarrierName,
+    'ServiceName,
+    'ProductCategory,
+    'DeliveryException,
+};
+
+type EntityId = enum {
+    'Customers,
+    'Orders,
+    'Warehouses,
+    'Regions,
+    'Carriers,
+    'ServiceLevels,
+    'Packages,
+    'PackageItems,
+    'Products,
+    'Categories,
+};
+
+type AttributeId = enum {
+    'Id,
+    'Tier,
+    'CreatedAt,
+    'CustomerFk,
+    'WarehouseFk,
+    'CarrierFk,
+    'ServiceLevelFk,
+    'RegionFk,
+    'RegionName,
+    'CarrierName,
+    'ServiceName,
+    'OrderFk,
+    'PackageFk,
+    'ProductFk,
+    'CategoryFk,
+    'CategoryName,
+};
+
+type RelationId = enum {
+    'OrderCustomer,
+    'OrderWarehouse,
+    'WarehouseRegion,
+    'OrderCarrier,
+    'OrderServiceLevel,
+    'PackageOrder,
+    'PackageItemPackage,
+    'PackageItemProduct,
+    'ProductCategory,
+    'OrderPackage,
+    'PackagePackageItem,
+};
+
+type Subject = String;
+type MeasureInput = enum { 'All };
+type DimensionInput = enum { 'All };
+# 筛选请求的领域输入类型（有类型变体，与维度一一对应）：
+#   OrderMonth -> 'Month(String)（月份字符串，如 "2026-07"）
+#   CustomerTier -> 'Tier(String)（客户等级字符串，如 "Gold"）
+#   OriginRegion -> 'Region(String)（地区名称字符串，如 "华东"）
+#   ProductCategory -> 'Category(String)（类别名称字符串）
+#   DeliveryException -> 'Exception(String)（封闭词汇：类型上可表达，但没有任何
+#     获准 capability（含筛选能力），请求命中它必然在能力解析阶段失败）
+# to_val 拒绝维度与输入变体不匹配（见 filter_capabilities）。
+type FilterInput = enum {
+    'Month(String),
+    'Tier(String),
+    'Region(String),
+    'Category(String),
+    'Exception(String),
+};
+
+# --- 实体与属性（物理表名 + 别名 + 属性 -> 物理列） ---------------------------
+
+def customers: e.Entity(EntityId, AttributeId) = e.entity('Customers, e.source_ref("customers", "cu"), [
+    e.attribute('Id, 'Customers, "id"),
+    e.attribute('Tier, 'Customers, "tier"),
+]);
+
+def orders: e.Entity(EntityId, AttributeId) = e.entity('Orders, e.source_ref("orders", "o"), [
+    e.attribute('Id, 'Orders, "id"),
+    e.attribute('CreatedAt, 'Orders, "created_at"),
+    e.attribute('CustomerFk, 'Orders, "customer_id"),
+    e.attribute('WarehouseFk, 'Orders, "warehouse_id"),
+    e.attribute('CarrierFk, 'Orders, "carrier_id"),
+    e.attribute('ServiceLevelFk, 'Orders, "service_level_id"),
+]);
+
+def warehouses: e.Entity(EntityId, AttributeId) = e.entity('Warehouses, e.source_ref("warehouses", "wh"), [
+    e.attribute('Id, 'Warehouses, "id"),
+    e.attribute('RegionFk, 'Warehouses, "region_id"),
+]);
+
+def regions: e.Entity(EntityId, AttributeId) = e.entity('Regions, e.source_ref("regions", "rg"), [
+    e.attribute('Id, 'Regions, "id"),
+    e.attribute('RegionName, 'Regions, "name"),
+]);
+
+def carriers: e.Entity(EntityId, AttributeId) = e.entity('Carriers, e.source_ref("carriers", "ca"), [
+    e.attribute('Id, 'Carriers, "id"),
+    e.attribute('CarrierName, 'Carriers, "name"),
+]);
+
+def service_levels: e.Entity(EntityId, AttributeId) = e.entity('ServiceLevels, e.source_ref("service_levels", "sl"), [
+    e.attribute('Id, 'ServiceLevels, "id"),
+    e.attribute('ServiceName, 'ServiceLevels, "name"),
+]);
+
+def packages: e.Entity(EntityId, AttributeId) = e.entity('Packages, e.source_ref("packages", "pk"), [
+    e.attribute('Id, 'Packages, "id"),
+    e.attribute('OrderFk, 'Packages, "order_id"),
+]);
+
+def package_items: e.Entity(EntityId, AttributeId) = e.entity('PackageItems, e.source_ref("package_items", "pi"), [
+    e.attribute('Id, 'PackageItems, "id"),
+    e.attribute('PackageFk, 'PackageItems, "package_id"),
+    e.attribute('ProductFk, 'PackageItems, "product_id"),
+]);
+
+def products: e.Entity(EntityId, AttributeId) = e.entity('Products, e.source_ref("products", "pr"), [
+    e.attribute('Id, 'Products, "id"),
+    e.attribute('CategoryFk, 'Products, "category_id"),
+]);
+
+def categories: e.Entity(EntityId, AttributeId) = e.entity('Categories, e.source_ref("categories", "ct"), [
+    e.attribute('Id, 'Categories, "id"),
+    e.attribute('CategoryName, 'Categories, "name"),
+]);
+
+# --- 关系（有向边，结构化等值列对 mapping） ---------------------------------
+
+# 安全（多对一，不扩张 grain）
+def order_customer: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'OrderCustomer, 'Orders, 'Customers,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Orders, 'CustomerFk),
+            e.attribute_ref('Customers, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def order_warehouse: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'OrderWarehouse, 'Orders, 'Warehouses,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Orders, 'WarehouseFk),
+            e.attribute_ref('Warehouses, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def warehouse_region: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'WarehouseRegion, 'Warehouses, 'Regions,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Warehouses, 'RegionFk),
+            e.attribute_ref('Regions, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def order_carrier: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'OrderCarrier, 'Orders, 'Carriers,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Orders, 'CarrierFk),
+            e.attribute_ref('Carriers, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def order_service_level: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'OrderServiceLevel, 'Orders, 'ServiceLevels,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Orders, 'ServiceLevelFk),
+            e.attribute_ref('ServiceLevels, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def package_order: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'PackageOrder, 'Packages, 'Orders,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Packages, 'OrderFk),
+            e.attribute_ref('Orders, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def package_item_package: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'PackageItemPackage, 'PackageItems, 'Packages,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('PackageItems, 'PackageFk),
+            e.attribute_ref('Packages, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def package_item_product: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'PackageItemProduct, 'PackageItems, 'Products,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('PackageItems, 'ProductFk),
+            e.attribute_ref('Products, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+def product_to_category: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'ProductCategory, 'Products, 'Categories,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Products, 'CategoryFk),
+            e.attribute_ref('Categories, 'Id)),
+    ]),
+    'GrainSafe, 'Inner);
+
+# fan-out（扩张 grain）
+def order_package: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'OrderPackage, 'Orders, 'Packages,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Orders, 'Id),
+            e.attribute_ref('Packages, 'OrderFk)),
+    ]),
+    'FanOut, 'Inner);
+
+def package_package_item: e.Relation(EntityId, AttributeId, RelationId) = e.relation(
+    'PackagePackageItem, 'Packages, 'PackageItems,
+    e.relation_mapping([
+        e.attribute_pair(
+            e.attribute_ref('Packages, 'Id),
+            e.attribute_ref('PackageItems, 'PackageFk)),
+    ]),
+    'FanOut, 'Inner);
+
+# --- 指标（登记在各自 grain 实体上） -----------------------------------------
+
+def orders_created: e.Measure(MeasureId, EntityId, AttributeId) = e.measure('OrdersCreated, 'Orders, 'Id,
+    'Aggregate({function: 'Count, distinct: 'False}), "orders_created");
+
+def delivered_packages: e.Measure(MeasureId, EntityId, AttributeId) = e.measure('DeliveredPackages, 'Packages, 'Id,
+    'Aggregate({function: 'Count, distinct: 'False}), "delivered_packages");
+
+def units_shipped: e.Measure(MeasureId, EntityId, AttributeId) = e.measure('UnitsShipped, 'PackageItems, 'Id,
+    'Aggregate({function: 'Count, distinct: 'False}), "units_shipped");
+
+# --- 维度（直接属性或受控计算表达式） -----------------------------------------
+
+# OrderMonth = substr(orders.created_at, 1, 7)
+def order_month: e.Dimension(DimensionId, EntityId, AttributeId) = e.dimension('OrderMonth, 'Orders,
+    e.dimension_computed(e.computed_expr('Substr, [
+        e.scalar_arg_attribute('Orders, 'CreatedAt),
+        e.scalar_arg_literal('Int(1)),
+        e.scalar_arg_literal('Int(7)),
+    ])),
+    "order_month");
+
+def customer_tier: e.Dimension(DimensionId, EntityId, AttributeId) = e.dimension('CustomerTier, 'Customers,
+    e.dimension_attribute('Customers, 'Tier), "customer_tier");
+
+def origin_region: e.Dimension(DimensionId, EntityId, AttributeId) = e.dimension('OriginRegion, 'Regions,
+    e.dimension_attribute('Regions, 'RegionName), "origin_region");
+
+def carrier_name: e.Dimension(DimensionId, EntityId, AttributeId) = e.dimension('CarrierName, 'Carriers,
+    e.dimension_attribute('Carriers, 'CarrierName), "carrier_name");
+
+def service_name: e.Dimension(DimensionId, EntityId, AttributeId) = e.dimension('ServiceName, 'ServiceLevels,
+    e.dimension_attribute('ServiceLevels, 'ServiceName), "service_name");
+
+# 能力获准，但从 Order grain 只能经 fan-out 到达（非法场景用它分组必须失败）
+def product_category: e.Dimension(DimensionId, EntityId, AttributeId) = e.dimension('ProductCategory, 'Categories,
+    e.dimension_attribute('Categories, 'CategoryName), "product_category");
+
+# --- 能力目录 -----------------------------------------------------------------
+
+def measure_capabilities: Array(e.Capability(MeasureId, Subject, MeasureInput)) = [
+    e.capability('OrdersCreated, fn(subject, input) { input == 'All }),
+    e.capability('DeliveredPackages, fn(subject, input) { input == 'All }),
+    e.capability('UnitsShipped, fn(subject, input) { input == 'All }),
+];
+
+def dimension_capabilities: Array(e.Capability(DimensionId, Subject, DimensionInput)) = [
+    e.capability('OrderMonth, fn(subject, input) { input == 'All }),
+    e.capability('CustomerTier, fn(subject, input) { input == 'All }),
+    e.capability('OriginRegion, fn(subject, input) { input == 'All }),
+    e.capability('CarrierName, fn(subject, input) { input == 'All }),
+    e.capability('ServiceName, fn(subject, input) { input == 'All }),
+    e.capability('ProductCategory, fn(subject, input) { input == 'All }),
+];
+# 注意：DeliveryException 属于封闭 Dimension vocabulary，但故意不登记能力
+# （没有获准 capability），请求命中它时 lowering 必须失败。
+
+# --- 筛选能力目录（有类型维度筛选） ---------------------------------------------
+# authorized 只做授权/诊断（subject 不进入 SQL/bindings）；to_val 把领域输入
+# 转为 qb.Val，最终成为参数化 SQL 的 bindings，不外泄表/列/alias/SQL/qb.Expr。
+def filter_capabilities: Array(e.FilterCapability(DimensionId, Subject, FilterInput)) = [
+    # OrderMonth：月份字符串；错误变体（如 'Tier(...)）被拒绝。
+    e.filter_capability('OrderMonth, fn(subject, input) { 'True }, fn(input) {
+        match input {
+            'Month(s) => 'String(s),
+            _ => fail!("invalid filter value for OrderMonth: expected Month", input),
+        }
+    }),
+    # CustomerTier：客户等级字符串。
+    e.filter_capability('CustomerTier, fn(subject, input) { 'True }, fn(input) {
+        match input {
+            'Tier(s) => 'String(s),
+            _ => fail!("invalid filter value for CustomerTier: expected Tier", input),
+        }
+    }),
+    # OriginRegion：地区名称字符串。
+    e.filter_capability('OriginRegion, fn(subject, input) { 'True }, fn(input) {
+        match input {
+            'Region(s) => 'String(s),
+            _ => fail!("invalid filter value for OriginRegion: expected Region", input),
+        }
+    }),
+    # ProductCategory：类别名称字符串。能力获准，但路径语义仍由关系图决定：
+    # 从 PackageItem grain 经 PackageItem -> Product -> Category 安全可达；
+    # 从 Order grain 仍只能经 fan-out 到达，分组与筛选都会判 grain 冲突。
+    e.filter_capability('ProductCategory, fn(subject, input) { 'True }, fn(input) {
+        match input {
+            'Category(s) => 'String(s),
+            _ => fail!("invalid filter value for ProductCategory: expected Category", input),
+        }
+    }),
+];
+
+# --- PlanProfile（企业知识接受的 QueryBuilder 能力声明） -----------------------
+
+def plan_profile: qb.PlanProfile = qb.with_scalar_functions(
+    qb.with_aggregate_functions(
+        qb.with_join_kinds(qb.standard_profile, ['Inner]),
+        ['Count]),
+    ['Substr, 'Eq, 'Ge, 'Le, 'And]);
+
+# --- 实例化 EnterpriseKnowledge ----------------------------------------------
+
+def knowledge: e.Knowledge(MeasureId, DimensionId, EntityId, AttributeId, RelationId, Subject, MeasureInput, DimensionInput, FilterInput) = {
+    revision: "logistics-ontology-v1",
+    entities: [
+        customers, orders, warehouses, regions, carriers, service_levels,
+        packages, package_items, products, categories,
+    ],
+    relations: [
+        order_customer, order_warehouse, warehouse_region, order_carrier,
+        order_service_level, package_order, package_item_package,
+        package_item_product, product_to_category, order_package, package_package_item,
+    ],
+    measures: [orders_created, delivered_packages, units_shipped],
+    dimensions: [order_month, customer_tier, origin_region, carrier_name, service_name, product_category],
+    measure_capabilities: measure_capabilities,
+    dimension_capabilities: dimension_capabilities,
+    filter_capabilities: filter_capabilities,
+    plan_profile: plan_profile,
+};
+
+# --- 导出 ---------------------------------------------------------------------
+
+export def creator: Fn(e.QueryRequest(MeasureId, DimensionId, Subject, MeasureInput, DimensionInput, FilterInput)) -> qb.Plan = e.make_query_creator(knowledge);
+
+export {
+    MeasureId, DimensionId, EntityId, AttributeId, RelationId, Subject, MeasureInput, DimensionInput, FilterInput,
+    knowledge, plan_profile,
+    customers, orders, warehouses, regions, carriers, service_levels,
+    packages, package_items, products, categories,
+    order_customer, order_warehouse, warehouse_region, order_carrier, order_service_level,
+    package_order, package_item_package, package_item_product, product_to_category,
+    order_package, package_package_item,
+    orders_created, delivered_packages, units_shipped,
+    order_month, customer_tier, origin_region, carrier_name, service_name, product_category,
+    measure_capabilities, dimension_capabilities, filter_capabilities,
+};
